@@ -328,6 +328,12 @@
 (Add16 <t> (Mul16 x y) (Mul16 x z)) -> (Mul16 x (Add16 <t> y z))
 (Add8  <t> (Mul8  x y) (Mul8  x z)) -> (Mul8  x (Add8  <t> y z))
 
+// Rewrite x*y - x*z  to  x*(y-z)
+(Sub64 <t> (Mul64 x y) (Mul64 x z)) -> (Mul64 x (Sub64 <t> y z))
+(Sub32 <t> (Mul32 x y) (Mul32 x z)) -> (Mul32 x (Sub32 <t> y z))
+(Sub16 <t> (Mul16 x y) (Mul16 x z)) -> (Mul16 x (Sub16 <t> y z))
+(Sub8  <t> (Mul8  x y) (Mul8  x z)) -> (Mul8  x (Sub8  <t> y z))
+
 // rewrite shifts of 8/16/32 bit consts into 64 bit consts to reduce
 // the number of the other rewrite rules for const shifts
 (Lsh64x32  <t> x (Const32 [c])) -> (Lsh64x64  x (Const64 <t> [int64(uint32(c))]))
@@ -707,6 +713,12 @@
 
 // Load of store of same address, with compatibly typed value and same size
 (Load <t1> p1 (Store {t2} p2 x _)) && isSamePtr(p1,p2) && t1.Compare(x.Type) == types.CMPeq && t1.Size() == t2.(*types.Type).Size() -> x
+
+// Pass constants through math.Float{32,64}bits and math.Float{32,64}frombits
+(Load <t1> p1 (Store {t2} p2 (Const64  [x]) _)) && isSamePtr(p1,p2) && t2.(*types.Type).Size() == 8 && is64BitFloat(t1) -> (Const64F [x])
+(Load <t1> p1 (Store {t2} p2 (Const32  [x]) _)) && isSamePtr(p1,p2) && t2.(*types.Type).Size() == 4 && is32BitFloat(t1) -> (Const32F [f2i(float64(math.Float32frombits(uint32(x))))])
+(Load <t1> p1 (Store {t2} p2 (Const64F [x]) _)) && isSamePtr(p1,p2) && t2.(*types.Type).Size() == 8 && is64BitInt(t1)   -> (Const64  [x])
+(Load <t1> p1 (Store {t2} p2 (Const32F [x]) _)) && isSamePtr(p1,p2) && t2.(*types.Type).Size() == 4 && is32BitInt(t1)   -> (Const32  [int64(int32(math.Float32bits(float32(i2f(x)))))])
 
 // Eliminate stores of values that have just been loaded from the same location.
 // We also handle the common case where there are some intermediate stores to non-overlapping struct fields.

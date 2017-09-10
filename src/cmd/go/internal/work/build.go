@@ -2198,10 +2198,13 @@ func (gcToolchain) gc(b *Builder, p *load.Package, archive, objdir string, asmhd
 		ofile = objdir + out
 	}
 
-	gcargs := []string{"-p", p.ImportPath}
-	if p.Name == "main" {
-		gcargs[1] = "main"
+	pkgpath := p.ImportPath
+	if cfg.BuildBuildmode == "plugin" {
+		pkgpath = load.PluginPath(p)
+	} else if p.Name == "main" {
+		pkgpath = "main"
 	}
+	gcargs := []string{"-p", pkgpath}
 	if p.Standard {
 		gcargs = append(gcargs, "-std")
 	}
@@ -2531,11 +2534,10 @@ func (gcToolchain) ld(b *Builder, root *Action, out string, allactions []*Action
 		ldflags = append(ldflags, "-s", "-w")
 	}
 	if cfg.BuildBuildmode == "plugin" {
-		pluginpath := root.Package.ImportPath
-		if pluginpath == "command-line-arguments" {
-			pluginpath = "plugin/unnamed-" + root.Package.Internal.BuildID
-		}
-		ldflags = append(ldflags, "-pluginpath", pluginpath)
+		ldflags = append(ldflags, "-pluginpath", load.PluginPath(root.Package))
+	}
+	if cfg.GOROOT != runtime.GOROOT() {
+		ldflags = append(ldflags, "-X=runtime/internal/sys.DefaultGoroot="+cfg.GOROOT)
 	}
 
 	// If the user has not specified the -extld option, then specify the
@@ -3173,10 +3175,12 @@ func (b *Builder) ccompilerCmd(envvar, defcmd, objdir string) []string {
 		}
 	}
 
-	if strings.Contains(a[0], "clang") {
-		// disable ASCII art in clang errors, if possible
+	// disable ASCII art in clang errors, if possible
+	if b.gccSupportsFlag("-fno-caret-diagnostics") {
 		a = append(a, "-fno-caret-diagnostics")
-		// clang is too smart about command-line arguments
+	}
+	// clang is too smart about command-line arguments
+	if b.gccSupportsFlag("-Qunused-arguments") {
 		a = append(a, "-Qunused-arguments")
 	}
 
@@ -3229,9 +3233,11 @@ func (b *Builder) gccSupportsFlag(flag string) bool {
 		if cfg.BuildN || cfg.BuildX {
 			b.Showcmd(b.WorkDir, "touch trivial.c")
 		}
-		src := filepath.Join(b.WorkDir, "trivial.c")
-		if err := ioutil.WriteFile(src, []byte{}, 0666); err != nil {
-			return false
+		if !cfg.BuildN {
+			src := filepath.Join(b.WorkDir, "trivial.c")
+			if err := ioutil.WriteFile(src, []byte{}, 0666); err != nil {
+				return false
+			}
 		}
 		b.flagCache = make(map[string]bool)
 	}

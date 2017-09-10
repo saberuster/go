@@ -296,10 +296,6 @@ func makemap(t *maptype, hint int, h *hmap) *hmap {
 		hint = 0
 	}
 
-	if !ismapkey(t.key) {
-		throw("runtime.makemap: unsupported map key type")
-	}
-
 	if evacuatedX+1 != evacuatedY {
 		// evacuate relies on this relationship
 		throw("bad evacuatedN")
@@ -573,7 +569,7 @@ again:
 
 	// If we hit the max load factor or we have too many overflow buckets,
 	// and we're not already in the middle of growing, start growing.
-	if !h.growing() && (overLoadFactor(h.count, h.B) || tooManyOverflowBuckets(h.noverflow, h.B)) {
+	if !h.growing() && (overLoadFactor(h.count+1, h.B) || tooManyOverflowBuckets(h.noverflow, h.B)) {
 		hashGrow(t, h)
 		goto again // Growing the table invalidates everything, so try again
 	}
@@ -682,25 +678,17 @@ search:
 	h.flags &^= hashWriting
 }
 
+// mapiterinit initializes the hiter struct used for ranging over maps.
+// The hiter struct pointed to by 'it' is allocated on the stack
+// by the compilers order pass or on the heap by reflect_mapiterinit.
+// Both need to have zeroed hiter since the struct contains pointers.
 func mapiterinit(t *maptype, h *hmap, it *hiter) {
-	// Clear pointer fields so garbage collector does not complain.
-	it.key = nil
-	it.value = nil
-	it.t = nil
-	it.h = nil
-	it.buckets = nil
-	it.bptr = nil
-	it.overflow[0] = nil
-	it.overflow[1] = nil
-
 	if raceenabled && h != nil {
 		callerpc := getcallerpc(unsafe.Pointer(&t))
 		racereadpc(unsafe.Pointer(h), callerpc, funcPC(mapiterinit))
 	}
 
 	if h == nil || h.count == 0 {
-		it.key = nil
-		it.value = nil
 		return
 	}
 
@@ -732,11 +720,9 @@ func mapiterinit(t *maptype, h *hmap, it *hiter) {
 
 	// iterator state
 	it.bucket = it.startBucket
-	it.wrapped = false
-	it.bptr = nil
 
 	// Remember we have an iterator.
-	// Can run concurrently with another hash_iter_init().
+	// Can run concurrently with another mapiterinit().
 	if old := h.flags; old&(iterator|oldIterator) != iterator|oldIterator {
 		atomic.Or8(&h.flags, iterator|oldIterator)
 	}
@@ -904,7 +890,7 @@ func hashGrow(t *maptype, h *hmap) {
 	// Otherwise, there are too many overflow buckets,
 	// so keep the same number of buckets and "grow" laterally.
 	bigger := uint8(1)
-	if !overLoadFactor(h.count, h.B) {
+	if !overLoadFactor(h.count+1, h.B) {
 		bigger = 0
 		h.flags |= sameSizeGrow
 	}
@@ -944,7 +930,7 @@ func hashGrow(t *maptype, h *hmap) {
 
 // overLoadFactor reports whether count items placed in 1<<B buckets is over loadFactor.
 func overLoadFactor(count int, B uint8) bool {
-	return count >= bucketCnt && uintptr(count) >= loadFactorNum*(bucketShift(B)/loadFactorDen)
+	return count > bucketCnt && uintptr(count) > loadFactorNum*(bucketShift(B)/loadFactorDen)
 }
 
 // tooManyOverflowBuckets reports whether noverflow buckets is too many for a map with 1<<B buckets.
@@ -1156,6 +1142,9 @@ func reflect_makemap(t *maptype, cap int) *hmap {
 	if sz := unsafe.Sizeof(hmap{}); sz != t.hmap.size {
 		println("runtime: sizeof(hmap) =", sz, ", t.hmap.size =", t.hmap.size)
 		throw("bad hmap size")
+	}
+	if !ismapkey(t.key) {
+		throw("runtime.reflect_makemap: unsupported map key type")
 	}
 	if t.key.size > maxKeySize && (!t.indirectkey || t.keysize != uint8(sys.PtrSize)) ||
 		t.key.size <= maxKeySize && (t.indirectkey || t.keysize != uint8(t.key.size)) {

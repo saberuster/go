@@ -236,7 +236,7 @@ var allAsmTests = []*asmTests{
 	{
 		arch:    "s390x",
 		os:      "linux",
-		imports: []string{"encoding/binary", "math/bits"},
+		imports: []string{"encoding/binary", "math", "math/bits"},
 		tests:   linuxS390XTests,
 	},
 	{
@@ -263,9 +263,10 @@ var allAsmTests = []*asmTests{
 		tests: linuxMIPS64Tests,
 	},
 	{
-		arch:  "ppc64le",
-		os:    "linux",
-		tests: linuxPPC64LETests,
+		arch:    "ppc64le",
+		os:      "linux",
+		imports: []string{"math"},
+		tests:   linuxPPC64LETests,
 	},
 	{
 		arch:  "amd64",
@@ -831,6 +832,20 @@ var linuxAMD64Tests = []*asmTest{
 		}`,
 		pos: []string{"\tADDQ\t[$]19", "\tIMULQ"}, // (a+19)*n
 	},
+	{
+		fn: `
+		func mul4(n int) int {
+			return 23*n - 9*n
+		}`,
+		pos: []string{"\tIMULQ\t[$]14"}, // 14*n
+	},
+	{
+		fn: `
+		func mul5(a, n int) int {
+			return a*n - 19*n
+		}`,
+		pos: []string{"\tADDQ\t[$]-19", "\tIMULQ"}, // (a-19)*n
+	},
 
 	// see issue 19595.
 	// We want to merge load+op in f58, but not in f59.
@@ -1150,6 +1165,20 @@ var linux386Tests = []*asmTest{
 		`,
 		pos: []string{"TEXT\t.*, [$]0-4"},
 	},
+	{
+		fn: `
+		func mul3(n int) int {
+			return 23*n - 9*n
+		}`,
+		pos: []string{"\tIMULL\t[$]14"}, // 14*n
+	},
+	{
+		fn: `
+		func mul4(a, n int) int {
+			return n*a - a*19
+		}`,
+		pos: []string{"\tADDL\t[$]-19", "\tIMULL"}, // (n-19)*a
+	},
 }
 
 var linuxS390XTests = []*asmTest{
@@ -1437,6 +1466,31 @@ var linuxS390XTests = []*asmTest{
 		}
 		`,
 		pos: []string{"TEXT\t.*, [$]0-8"},
+	},
+	// Constant propagation through raw bits conversions.
+	{
+		// uint32 constant converted to float32 constant
+		fn: `
+		func $(x float32) float32 {
+			if x > math.Float32frombits(0x3f800000) {
+				return -x
+			}
+			return x
+		}
+		`,
+		pos: []string{"\tFMOVS\t[$]f32.3f800000\\(SB\\)"},
+	},
+	{
+		// float32 constant converted to uint32 constant
+		fn: `
+		func $(x uint32) uint32 {
+			if x > math.Float32bits(1) {
+				return -x
+			}
+			return x
+		}
+		`,
+		neg: []string{"\tFMOVS\t"},
 	},
 }
 
@@ -1959,6 +2013,31 @@ var linuxPPC64LETests = []*asmTest{
 		}
 		`,
 		pos: []string{"TEXT\t.*, [$]0-8"},
+	},
+	// Constant propagation through raw bits conversions.
+	{
+		// uint32 constant converted to float32 constant
+		fn: `
+		func $(x float32) float32 {
+			if x > math.Float32frombits(0x3f800000) {
+				return -x
+			}
+			return x
+		}
+		`,
+		pos: []string{"\tFMOVS\t[$]f32.3f800000\\(SB\\)"},
+	},
+	{
+		// float32 constant converted to uint32 constant
+		fn: `
+		func $(x uint32) uint32 {
+			if x > math.Float32bits(1) {
+				return -x
+			}
+			return x
+		}
+		`,
+		neg: []string{"\tFMOVS\t"},
 	},
 }
 
