@@ -273,10 +273,10 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		switch v.Aux.(type) {
 		default:
 			v.Fatalf("aux is of unknown type %T", v.Aux)
-		case *ssa.ExternSymbol:
+		case *obj.LSym:
 			wantreg = "SB"
 			gc.AddAux(&p.From, v)
-		case *ssa.ArgSymbol, *ssa.AutoSymbol:
+		case *gc.Node:
 			wantreg = "SP"
 			gc.AddAux(&p.From, v)
 		case nil:
@@ -571,7 +571,7 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		p.From.Type = obj.TYPE_REG // assembler encodes conditional bits in Reg
 		p.From.Reg = arm64.COND_LO
 		p.Reg = v.Args[0].Reg()
-		p.From3 = &obj.Addr{Type: obj.TYPE_REG, Reg: r1}
+		p.SetFrom3(obj.Addr{Type: obj.TYPE_REG, Reg: r1})
 		p.To.Type = obj.TYPE_REG
 		p.To.Reg = v.Reg()
 	case ssa.OpARM64DUFFZERO:

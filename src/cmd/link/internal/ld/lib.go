@@ -168,8 +168,12 @@ func (ctxt *Link) DynlinkingGo() bool {
 	if !ctxt.Loaded {
 		panic("DynlinkingGo called before all symbols loaded")
 	}
-	canUsePlugins := ctxt.Syms.ROLookup("plugin.Open", 0) != nil
-	return Buildmode == BuildmodeShared || *FlagLinkshared || Buildmode == BuildmodePlugin || canUsePlugins
+	return Buildmode == BuildmodeShared || *FlagLinkshared || Buildmode == BuildmodePlugin || ctxt.CanUsePlugins()
+}
+
+// CanUsePlugins returns whether a plugins can be used
+func (ctxt *Link) CanUsePlugins() bool {
+	return ctxt.Syms.ROLookup("plugin.Open", 0) != nil
 }
 
 // UseRelro returns whether to make use of "read only relocations" aka
@@ -1939,7 +1943,12 @@ func genasmsym(ctxt *Link, put func(*Link, *Symbol, string, SymbolType, int64, *
 	// skip STEXT symbols. Normal STEXT symbols are emitted by walking textp.
 	s := ctxt.Syms.Lookup("runtime.text", 0)
 	if s.Type == STEXT {
-		put(ctxt, s, s.Name, TextSym, s.Value, nil)
+		// We've already included this symbol in ctxt.Textp
+		// if ctxt.DynlinkingGo() && Headtype == objabi.Hdarwin.
+		// See data.go:/textaddress
+		if !(ctxt.DynlinkingGo() && Headtype == objabi.Hdarwin) {
+			put(ctxt, s, s.Name, TextSym, s.Value, nil)
+		}
 	}
 
 	n := 0
@@ -1965,7 +1974,12 @@ func genasmsym(ctxt *Link, put func(*Link, *Symbol, string, SymbolType, int64, *
 
 	s = ctxt.Syms.Lookup("runtime.etext", 0)
 	if s.Type == STEXT {
-		put(ctxt, s, s.Name, TextSym, s.Value, nil)
+		// We've already included this symbol in ctxt.Textp
+		// if ctxt.DynlinkingGo() && Headtype == objabi.Hdarwin.
+		// See data.go:/textaddress
+		if !(ctxt.DynlinkingGo() && Headtype == objabi.Hdarwin) {
+			put(ctxt, s, s.Name, TextSym, s.Value, nil)
+		}
 	}
 
 	for _, s := range ctxt.Syms.Allsym {

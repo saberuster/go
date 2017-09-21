@@ -265,7 +265,7 @@ var allAsmTests = []*asmTests{
 	{
 		arch:    "ppc64le",
 		os:      "linux",
-		imports: []string{"math"},
+		imports: []string{"math", "math/bits"},
 		tests:   linuxPPC64LETests,
 	},
 	{
@@ -1457,6 +1457,39 @@ var linuxS390XTests = []*asmTest{
 		`,
 		pos: []string{"\tFLOGR\t"},
 	},
+	// Intrinsic tests for math.
+	{
+		fn: `
+		func ceil(x float64) float64 {
+			return math.Ceil(x)
+		}
+		`,
+		pos: []string{"\tFIDBR\t[$]6"},
+	},
+	{
+		fn: `
+		func floor(x float64) float64 {
+			return math.Floor(x)
+		}
+		`,
+		pos: []string{"\tFIDBR\t[$]7"},
+	},
+	{
+		fn: `
+		func round(x float64) float64 {
+			return math.Round(x)
+		}
+		`,
+		pos: []string{"\tFIDBR\t[$]1"},
+	},
+	{
+		fn: `
+		func trunc(x float64) float64 {
+			return math.Trunc(x)
+		}
+		`,
+		pos: []string{"\tFIDBR\t[$]5"},
+	},
 	{
 		// check that stack store is optimized away
 		fn: `
@@ -1491,6 +1524,29 @@ var linuxS390XTests = []*asmTest{
 		}
 		`,
 		neg: []string{"\tFMOVS\t"},
+	},
+	// Constant propagation through float comparisons.
+	{
+		fn: `
+		func $() bool {
+			return 0.5 == float64(uint32(1)) ||
+				1.5 > float64(uint64(1<<63)) ||
+				math.NaN() == math.NaN()
+		}
+		`,
+		pos: []string{"\tMOV(B|BZ|D)\t[$]0,"},
+		neg: []string{"\tFCMPU\t", "\tMOV(B|BZ|D)\t[$]1,"},
+	},
+	{
+		fn: `
+		func $() bool {
+			return float32(0.5) <= float32(int64(1)) &&
+				float32(1.5) >= float32(int32(-1<<31)) &&
+				float32(math.NaN()) != float32(math.NaN())
+		}
+		`,
+		pos: []string{"\tMOV(B|BZ|D)\t[$]1,"},
+		neg: []string{"\tCEBR\t", "\tMOV(B|BZ|D)\t[$]0,"},
 	},
 }
 
@@ -2004,6 +2060,23 @@ var linuxPPC64LETests = []*asmTest{
 		`,
 		pos: []string{"\tROTL\t"},
 	},
+	{
+		fn: `
+		func f10(a uint32) uint32 {
+			return bits.RotateLeft32(a, 9)
+		}
+		`,
+		pos: []string{"\tROTLW\t"},
+	},
+	{
+		fn: `
+		func f11(a uint64) uint64 {
+			return bits.RotateLeft64(a, 37)
+		}
+		`,
+		pos: []string{"\tROTL\t"},
+	},
+
 	{
 		// check that stack store is optimized away
 		fn: `

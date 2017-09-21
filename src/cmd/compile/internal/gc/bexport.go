@@ -1190,22 +1190,6 @@ func (p *exporter) expr(n *Node) {
 		p.value(n.Val())
 
 	case ONAME:
-		// Special case: name used as local variable in export.
-		// _ becomes ~b%d internally; print as _ for export
-		if n.Sym != nil && n.Sym.Name[0] == '~' && n.Sym.Name[1] == 'b' {
-			p.op(ONAME)
-			p.pos(n)
-			p.string("_") // inlined and customized version of p.sym(n)
-			break
-		}
-
-		if n.Sym != nil && !isblank(n) && n.Name.Vargen > 0 {
-			p.op(ONAME)
-			p.pos(n)
-			p.sym(n)
-			break
-		}
-
 		// Special case: explicit name of func (*T) method(...) is turned into pkg.(*T).method,
 		// but for export, this should be rendered as (*pkg.T).meth.
 		// These nodes have the special property that they are names with a left OTYPE and a right ONAME.
@@ -1227,11 +1211,7 @@ func (p *exporter) expr(n *Node) {
 	case OTYPE:
 		p.op(OTYPE)
 		p.pos(n)
-		if p.bool(n.Type == nil) {
-			p.sym(n)
-		} else {
-			p.typ(n.Type)
-		}
+		p.typ(n.Type)
 
 	// case OTARRAY, OTMAP, OTCHAN, OTSTRUCT, OTINTER, OTFUNC:
 	// 	should have been resolved by typechecking - handled by default case
@@ -1506,8 +1486,8 @@ func (p *exporter) stmt(n *Node) {
 		p.stmtList(n.List)
 		p.stmtList(n.Nbody)
 
-	case OFALL, OXFALL:
-		p.op(OXFALL)
+	case OFALL:
+		p.op(OFALL)
 		p.pos(n)
 
 	case OBREAK, OCONTINUE:

@@ -429,7 +429,7 @@ func badctxt() {
 
 func lockedOSThread() bool {
 	gp := getg()
-	return gp.lockedm != nil && gp.m.lockedg != nil
+	return gp.lockedm != 0 && gp.m.lockedg != 0
 }
 
 var (
@@ -531,15 +531,17 @@ func mcommoninit(mp *m) {
 		callers(1, mp.createstack[:])
 	}
 
-	mp.fastrand = 0x49f6428a + uint32(mp.id) + uint32(cputicks())
-	if mp.fastrand == 0 {
-		mp.fastrand = 0x49f6428a
-	}
-
 	lock(&sched.lock)
 	mp.id = sched.mcount
 	sched.mcount++
 	checkmcount()
+
+	mp.fastrand[0] = 1597334677 * uint32(mp.id)
+	mp.fastrand[1] = uint32(cputicks())
+	if mp.fastrand[0]|mp.fastrand[1] == 0 {
+		mp.fastrand[1] = 1
+	}
+
 	mpreinit(mp)
 	if mp.gsignal != nil {
 		mp.gsignal.stackguard1 = mp.gsignal.stack.lo + _StackGuard
@@ -1504,8 +1506,8 @@ func oneNewExtraM() {
 	gp.m = mp
 	mp.curg = gp
 	mp.locked = _LockInternal
-	mp.lockedg = gp
-	gp.lockedm = mp
+	mp.lockedg.set(gp)
+	gp.lockedm.set(mp)
 	gp.goid = int64(atomic.Xadd64(&sched.goidgen, 1))
 	if raceenabled {
 		gp.racectx = racegostart(funcPC(newextram) + sys.PCQuantum)
@@ -1819,7 +1821,7 @@ func wakep() {
 func stoplockedm() {
 	_g_ := getg()
 
-	if _g_.m.lockedg == nil || _g_.m.lockedg.lockedm != _g_.m {
+	if _g_.m.lockedg == 0 || _g_.m.lockedg.ptr().lockedm.ptr() != _g_.m {
 		throw("stoplockedm: inconsistent locking")
 	}
 	if _g_.m.p != 0 {
@@ -1831,7 +1833,7 @@ func stoplockedm() {
 	// Wait until another thread schedules lockedg again.
 	notesleep(&_g_.m.park)
 	noteclear(&_g_.m.park)
-	status := readgstatus(_g_.m.lockedg)
+	status := readgstatus(_g_.m.lockedg.ptr())
 	if status&^_Gscan != _Grunnable {
 		print("runtime:stoplockedm: g is not Grunnable or Gscanrunnable\n")
 		dumpgstatus(_g_)
@@ -1847,7 +1849,7 @@ func stoplockedm() {
 func startlockedm(gp *g) {
 	_g_ := getg()
 
-	mp := gp.lockedm
+	mp := gp.lockedm.ptr()
 	if mp == _g_.m {
 		throw("startlockedm: locked to me")
 	}
@@ -2214,9 +2216,9 @@ func schedule() {
 		throw("schedule: holding locks")
 	}
 
-	if _g_.m.lockedg != nil {
+	if _g_.m.lockedg != 0 {
 		stoplockedm()
-		execute(_g_.m.lockedg, false) // Never returns.
+		execute(_g_.m.lockedg.ptr(), false) // Never returns.
 	}
 
 top:
@@ -2267,7 +2269,7 @@ top:
 		resetspinning()
 	}
 
-	if gp.lockedm != nil {
+	if gp.lockedm != 0 {
 		// Hands off own p to the locked m,
 		// then blocks waiting for a new p.
 		startlockedm(gp)
@@ -2386,8 +2388,8 @@ func goexit0(gp *g) {
 		atomic.Xadd(&sched.ngsys, -1)
 	}
 	gp.m = nil
-	gp.lockedm = nil
-	_g_.m.lockedg = nil
+	gp.lockedm = 0
+	_g_.m.lockedg = 0
 	gp.paniconfault = false
 	gp._defer = nil // should be true already but just in case.
 	gp._panic = nil // non-nil for Goexit during panic. points at stack-allocated data.
@@ -2815,7 +2817,7 @@ func exitsyscall0(gp *g) {
 		acquirep(_p_)
 		execute(gp, false) // Never returns.
 	}
-	if _g_.m.lockedg != nil {
+	if _g_.m.lockedg != 0 {
 		// Wait until another thread schedules gp and so m again.
 		stoplockedm()
 		execute(gp, false) // Never returns.
@@ -3165,8 +3167,8 @@ func Breakpoint() {
 //go:nosplit
 func dolockOSThread() {
 	_g_ := getg()
-	_g_.m.lockedg = _g_
-	_g_.lockedm = _g_.m
+	_g_.m.lockedg.set(_g_)
+	_g_.lockedm.set(_g_.m)
 }
 
 //go:nosplit
@@ -3194,8 +3196,8 @@ func dounlockOSThread() {
 	if _g_.m.locked != 0 {
 		return
 	}
-	_g_.m.lockedg = nil
-	_g_.lockedm = nil
+	_g_.m.lockedg = 0
+	_g_.lockedm = 0
 }
 
 //go:nosplit
@@ -3863,15 +3865,11 @@ func sysmon() {
 				}
 				shouldRelax := true
 				if osRelaxMinNS > 0 {
-					lock(&timers.lock)
-					if timers.sleeping {
-						now := nanotime()
-						next := timers.sleepUntil
-						if next-now < osRelaxMinNS {
-							shouldRelax = false
-						}
+					next := timeSleepUntil()
+					now := nanotime()
+					if next-now < osRelaxMinNS {
+						shouldRelax = false
 					}
-					unlock(&timers.lock)
 				}
 				if shouldRelax {
 					osRelax(true)
@@ -4106,7 +4104,7 @@ func schedtrace(detailed bool) {
 	for mp := allm; mp != nil; mp = mp.alllink {
 		_p_ := mp.p.ptr()
 		gp := mp.curg
-		lockedg := mp.lockedg
+		lockedg := mp.lockedg.ptr()
 		id1 := int32(-1)
 		if _p_ != nil {
 			id1 = _p_.id
@@ -4126,7 +4124,7 @@ func schedtrace(detailed bool) {
 	for gi := 0; gi < len(allgs); gi++ {
 		gp := allgs[gi]
 		mp := gp.m
-		lockedm := gp.lockedm
+		lockedm := gp.lockedm.ptr()
 		id1 := int32(-1)
 		if mp != nil {
 			id1 = mp.id

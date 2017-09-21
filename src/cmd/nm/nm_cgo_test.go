@@ -11,13 +11,6 @@ import (
 	"testing"
 )
 
-func TestInternalLinkerCgoFile(t *testing.T) {
-	if !canInternalLink() {
-		t.Skip("skipping; internal linking is not supported")
-	}
-	testGoFile(t, true, false)
-}
-
 func canInternalLink() bool {
 	switch runtime.GOOS {
 	case "dragonfly":
@@ -31,6 +24,24 @@ func canInternalLink() bool {
 	return true
 }
 
-func TestExternalLinkerCgoFile(t *testing.T) {
-	testGoFile(t, true, true)
+func TestInternalLinkerCgoExec(t *testing.T) {
+	if !canInternalLink() {
+		t.Skip("skipping; internal linking is not supported")
+	}
+	testGoExec(t, true, false)
+}
+
+func TestExternalLinkerCgoExec(t *testing.T) {
+	testGoExec(t, true, true)
+}
+
+func TestCgoLib(t *testing.T) {
+	if runtime.GOARCH == "arm" {
+		switch runtime.GOOS {
+		case "darwin", "android", "nacl":
+		default:
+			t.Skip("skip test due to #19811")
+		}
+	}
+	testGoLib(t, true)
 }

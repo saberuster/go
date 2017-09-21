@@ -42,21 +42,17 @@ func emitptrargsmap() {
 	}
 	off := duint32(lsym, 0, uint32(nbitmap))
 	off = duint32(lsym, off, uint32(bv.n))
-	var xoffset int64
+
 	if Curfn.IsMethod() {
-		xoffset = 0
-		onebitwalktype1(Curfn.Type.Recvs(), &xoffset, bv)
+		onebitwalktype1(Curfn.Type.Recvs(), 0, bv)
 	}
-
 	if Curfn.Type.NumParams() > 0 {
-		xoffset = 0
-		onebitwalktype1(Curfn.Type.Params(), &xoffset, bv)
+		onebitwalktype1(Curfn.Type.Params(), 0, bv)
 	}
-
 	off = dbvec(lsym, off, bv)
+
 	if Curfn.Type.NumResults() > 0 {
-		xoffset = 0
-		onebitwalktype1(Curfn.Type.Results(), &xoffset, bv)
+		onebitwalktype1(Curfn.Type.Results(), 0, bv)
 		off = dbvec(lsym, off, bv)
 	}
 
@@ -133,20 +129,21 @@ func (s *ssafn) AllocFrame(f *ssa.Func) {
 	scratchUsed := false
 	for _, b := range f.Blocks {
 		for _, v := range b.Values {
-			switch a := v.Aux.(type) {
-			case *ssa.ArgSymbol:
-				n := a.Node.(*Node)
-				// Don't modify nodfp; it is a global.
-				if n != nodfp {
+			if n, ok := v.Aux.(*Node); ok {
+				switch n.Class() {
+				case PPARAM, PPARAMOUT:
+					// Don't modify nodfp; it is a global.
+					if n != nodfp {
+						n.Name.SetUsed(true)
+					}
+				case PAUTO:
 					n.Name.SetUsed(true)
 				}
-			case *ssa.AutoSymbol:
-				a.Node.(*Node).Name.SetUsed(true)
 			}
-
 			if !scratchUsed {
 				scratchUsed = v.Op.UsesScratch()
 			}
+
 		}
 	}
 
@@ -348,15 +345,25 @@ func debuginfo(fnsym *obj.LSym, curfn interface{}) []dwarf.Scope {
 
 	var varScopes []ScopeID
 	for _, decl := range decls {
-		var scope ScopeID
-		if !decl.Name.Captured() && !decl.Name.Byval() {
-			// n.Pos of captured variables is their first
-			// use in the closure but they should always
-			// be assigned to scope 0 instead.
-			// TODO(mdempsky): Verify this.
-			scope = findScope(fn.Func.Marks, decl.Pos)
+		pos := decl.Pos
+		if decl.Name.Defn != nil && (decl.Name.Captured() || decl.Name.Byval()) {
+			// It's not clear which position is correct for captured variables here:
+			// * decl.Pos is the wrong position for captured variables, in the inner
+			//   function, but it is the right position in the outer function.
+			// * decl.Name.Defn is nil for captured variables that were arguments
+			//   on the outer function, however the decl.Pos for those seems to be
+			//   correct.
+			// * decl.Name.Defn is the "wrong" thing for variables declared in the
+			//   header of a type switch, it's their position in the header, rather
+			//   than the position of the case statement. In principle this is the
+			//   right thing, but here we prefer the latter because it makes each
+			//   instance of the header variable local to the lexical block of its
+			//   case statement.
+			// This code is probably wrong for type switch variables that are also
+			// captured.
+			pos = decl.Name.Defn.Pos
 		}
-		varScopes = append(varScopes, scope)
+		varScopes = append(varScopes, findScope(fn.Func.Marks, pos))
 	}
 	return assembleScopes(fnsym, fn, dwarfVars, varScopes)
 }

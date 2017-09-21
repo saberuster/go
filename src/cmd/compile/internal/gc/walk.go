@@ -113,15 +113,12 @@ func paramoutheap(fn *Node) bool {
 // adds "adjust" to all the argument locations for the call n.
 // n must be a defer or go node that has already been walked.
 func adjustargs(n *Node, adjust int) {
-	var arg *Node
-	var lhs *Node
-
 	callfunc := n.Left
-	for _, arg = range callfunc.List.Slice() {
+	for _, arg := range callfunc.List.Slice() {
 		if arg.Op != OAS {
 			Fatalf("call arg not assignment")
 		}
-		lhs = arg.Left
+		lhs := arg.Left
 		if lhs.Op == ONAME {
 			// This is a temporary introduced by reorder1.
 			// The real store to the stack appears later in the arg list.
@@ -303,9 +300,8 @@ func walkstmt(n *Node) *Node {
 			// so that reorder3 can fix up conflicts
 			var rl []*Node
 
-			var cl Class
 			for _, ln := range Curfn.Func.Dcl {
-				cl = ln.Class()
+				cl := ln.Class()
 				if cl == PAUTO || cl == PAUTOHEAP {
 					break
 				}
@@ -352,10 +348,6 @@ func walkstmt(n *Node) *Node {
 
 	case ORANGE:
 		n = walkrange(n)
-
-	case OXFALL:
-		yyerror("fallthrough statement out of place")
-		n.Op = OFALL
 	}
 
 	if n.Op == ONAME {
@@ -1771,7 +1763,7 @@ func ascompatee1(l *Node, r *Node, init *Nodes) *Node {
 
 func ascompatee(op Op, nl, nr []*Node, init *Nodes) []*Node {
 	// check assign expression list to
-	// a expression list. called in
+	// an expression list. called in
 	//	expr-list = expr-list
 
 	// ensure order of evaluation for function calls
@@ -1823,7 +1815,7 @@ func fncall(l *Node, rt *types.Type) bool {
 }
 
 // check assign type list to
-// a expression list. called in
+// an expression list. called in
 //	expr-list = func()
 func ascompatet(nl Nodes, nr *types.Type) []*Node {
 	if nl.Len() != nr.NumFields() {
@@ -2367,7 +2359,6 @@ func reorder1(all []*Node) []*Node {
 	var f *Node   // last fncall assigned to stack
 	var r []*Node // non fncalls and tempnames assigned to stack
 	d := 0
-	var a *Node
 	for _, n := range all {
 		if !n.HasCall() {
 			r = append(r, n)
@@ -2381,7 +2372,7 @@ func reorder1(all []*Node) []*Node {
 		}
 
 		// make assignment of fncall to tempname
-		a = temp(n.Right.Type)
+		a := temp(n.Right.Type)
 
 		a = nod(OAS, a, n.Right)
 		g = append(g, a)
@@ -2406,8 +2397,6 @@ func reorder1(all []*Node) []*Node {
 //
 // function calls have been removed.
 func reorder3(all []*Node) []*Node {
-	var l *Node
-
 	// If a needed expression may be affected by an
 	// earlier assignment, make an early copy of that
 	// expression and use the copy instead.
@@ -2415,7 +2404,7 @@ func reorder3(all []*Node) []*Node {
 
 	var mapinit Nodes
 	for i, n := range all {
-		l = n.Left
+		l := n.Left
 
 		// Save subexpressions needed on left side.
 		// Drill through non-dereferences.
@@ -2522,9 +2511,8 @@ func aliased(n *Node, all []*Node, i int) bool {
 	memwrite := 0
 
 	varwrite := 0
-	var a *Node
 	for _, an := range all[:i] {
-		a = outervalue(an.Left)
+		a := outervalue(an.Left)
 
 		for a.Op == ODOT {
 			a = a.Left
@@ -2877,10 +2865,10 @@ func mkmapnames(base string) mapnames {
 	return mapnames{base, base + "_fast32", base + "_fast64", base + "_faststr"}
 }
 
-var mapaccess1 mapnames = mkmapnames("mapaccess1")
-var mapaccess2 mapnames = mkmapnames("mapaccess2")
-var mapassign mapnames = mkmapnames("mapassign")
-var mapdelete mapnames = mkmapnames("mapdelete")
+var mapaccess1 = mkmapnames("mapaccess1")
+var mapaccess2 = mkmapnames("mapaccess2")
+var mapassign = mkmapnames("mapassign")
+var mapdelete = mkmapnames("mapdelete")
 
 func mapfast(t *types.Type) int {
 	// Check ../../runtime/hashmap.go:maxValueSize before changing.
@@ -3915,12 +3903,10 @@ func walkprintfunc(n *Node, init *Nodes) *Node {
 	t := nod(OTFUNC, nil, nil)
 	num := 0
 	var printargs []*Node
-	var a *Node
-	var buf string
 	for _, n1 := range n.List.Slice() {
-		buf = fmt.Sprintf("a%d", num)
+		buf := fmt.Sprintf("a%d", num)
 		num++
-		a = namedfield(buf, n1.Type)
+		a := namedfield(buf, n1.Type)
 		t.List.Append(a)
 		printargs = append(printargs, a.Left)
 	}
@@ -3932,7 +3918,7 @@ func walkprintfunc(n *Node, init *Nodes) *Node {
 	sym := lookupN("print·%d", walkprintfunc_prgen)
 	fn := dclfunc(sym, t)
 
-	a = nod(n.Op, nil, nil)
+	a := nod(n.Op, nil, nil)
 	a.List.Set(printargs)
 	a = typecheck(a, Etop)
 	a = walkstmt(a)

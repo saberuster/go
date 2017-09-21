@@ -6,6 +6,8 @@ package tar
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"internal/testenv"
 	"io"
 	"io/ioutil"
@@ -14,10 +16,88 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+type testError struct{ error }
+
+type fileOps []interface{} // []T where T is (string | int64)
+
+// testFile is an io.ReadWriteSeeker where the IO operations performed
+// on it must match the list of operations in ops.
+type testFile struct {
+	ops fileOps
+	pos int64
+}
+
+func (f *testFile) Read(b []byte) (int, error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
+	if len(f.ops) == 0 {
+		return 0, io.EOF
+	}
+	s, ok := f.ops[0].(string)
+	if !ok {
+		return 0, errors.New("unexpected Read operation")
+	}
+
+	n := copy(b, s)
+	if len(s) > n {
+		f.ops[0] = s[n:]
+	} else {
+		f.ops = f.ops[1:]
+	}
+	f.pos += int64(len(b))
+	return n, nil
+}
+
+func (f *testFile) Write(b []byte) (int, error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
+	if len(f.ops) == 0 {
+		return 0, errors.New("unexpected Write operation")
+	}
+	s, ok := f.ops[0].(string)
+	if !ok {
+		return 0, errors.New("unexpected Write operation")
+	}
+
+	if !strings.HasPrefix(s, string(b)) {
+		return 0, testError{fmt.Errorf("got Write(%q), want Write(%q)", b, s)}
+	}
+	if len(s) > len(b) {
+		f.ops[0] = s[len(b):]
+	} else {
+		f.ops = f.ops[1:]
+	}
+	f.pos += int64(len(b))
+	return len(b), nil
+}
+
+func (f *testFile) Seek(pos int64, whence int) (int64, error) {
+	if pos == 0 && whence == io.SeekCurrent {
+		return f.pos, nil
+	}
+	if len(f.ops) == 0 {
+		return 0, errors.New("unexpected Seek operation")
+	}
+	s, ok := f.ops[0].(int64)
+	if !ok {
+		return 0, errors.New("unexpected Seek operation")
+	}
+
+	if s != pos || whence != io.SeekCurrent {
+		return 0, testError{fmt.Errorf("got Seek(%d, %d), want Seek(%d, %d)", pos, whence, s, io.SeekCurrent)}
+	}
+	f.pos += s
+	f.ops = f.ops[1:]
+	return f.pos, nil
+}
 
 func equalSparseEntries(x, y []SparseEntry) bool {
 	return (len(x) == 0 && len(y) == 0) || reflect.DeepEqual(x, y)
@@ -684,6 +764,147 @@ func TestHeaderAllowedFormats(t *testing.T) {
 		if (formats == FormatUnknown) && (err == nil) {
 			t.Errorf("test %d, got nil-error, want non-nil error", i)
 		}
+	}
+}
+
+func TestSparseFiles(t *testing.T) {
+	// Only perform the tests for hole-detection on the builders,
+	// where we have greater control over the filesystem.
+	sparseSupport := testenv.Builder() != ""
+	if runtime.GOOS == "linux" && runtime.GOARCH == "arm" {
+		// The "linux-arm" builder uses aufs for its root FS,
+		// which only supports hole-punching, but not hole-detection.
+		sparseSupport = false
+	}
+	if runtime.GOOS == "darwin" {
+		// The "darwin-*" builders use hfs+ for its root FS,
+		// which does not support sparse files.
+		sparseSupport = false
+	}
+	if runtime.GOOS == "openbsd" {
+		// The "openbsd-*" builders use ffs for its root FS,
+		// which does not support sparse files.
+		sparseSupport = false
+	}
+
+	vectors := []struct {
+		label     string
+		sparseMap sparseHoles
+	}{
+		{"EmptyFile", sparseHoles{{0, 0}}},
+		{"BigData", sparseHoles{{1e6, 0}}},
+		{"BigHole", sparseHoles{{0, 1e6}}},
+		{"DataFront", sparseHoles{{1e3, 1e6 - 1e3}}},
+		{"HoleFront", sparseHoles{{0, 1e6 - 1e3}, {1e6, 0}}},
+		{"DataMiddle", sparseHoles{{0, 5e5 - 1e3}, {5e5, 5e5}}},
+		{"HoleMiddle", sparseHoles{{1e3, 1e6 - 2e3}, {1e6, 0}}},
+		{"Multiple", func() (sph []SparseEntry) {
+			const chunkSize = 1e6
+			for i := 0; i < 100; i++ {
+				sph = append(sph, SparseEntry{chunkSize * int64(i), chunkSize - 1e3})
+			}
+			return append(sph, SparseEntry{int64(len(sph) * chunkSize), 0})
+		}()},
+	}
+
+	for _, v := range vectors {
+		sph := v.sparseMap
+		t.Run(v.label, func(t *testing.T) {
+			src, err := ioutil.TempFile("", "")
+			if err != nil {
+				t.Fatalf("unexpected TempFile error: %v", err)
+			}
+			defer os.Remove(src.Name())
+			dst, err := ioutil.TempFile("", "")
+			if err != nil {
+				t.Fatalf("unexpected TempFile error: %v", err)
+			}
+			defer os.Remove(dst.Name())
+
+			// Create the source sparse file.
+			hdr := Header{
+				Typeflag:    TypeReg,
+				Name:        "sparse.db",
+				Size:        sph[len(sph)-1].endOffset(),
+				SparseHoles: sph,
+			}
+			junk := bytes.Repeat([]byte{'Z'}, int(hdr.Size+1e3))
+			if _, err := src.Write(junk); err != nil {
+				t.Fatalf("unexpected Write error: %v", err)
+			}
+			if err := hdr.PunchSparseHoles(src); err != nil {
+				t.Fatalf("unexpected PunchSparseHoles error: %v", err)
+			}
+			var pos int64
+			for _, s := range sph {
+				b := bytes.Repeat([]byte{'X'}, int(s.Offset-pos))
+				if _, err := src.WriteAt(b, pos); err != nil {
+					t.Fatalf("unexpected WriteAt error: %v", err)
+				}
+				pos = s.endOffset()
+			}
+
+			// Round-trip the sparse file to/from a tar archive.
+			b := new(bytes.Buffer)
+			tw := NewWriter(b)
+			if err := tw.WriteHeader(&hdr); err != nil {
+				t.Fatalf("unexpected WriteHeader error: %v", err)
+			}
+			if _, err := tw.ReadFrom(src); err != nil {
+				t.Fatalf("unexpected ReadFrom error: %v", err)
+			}
+			if err := tw.Close(); err != nil {
+				t.Fatalf("unexpected Close error: %v", err)
+			}
+			tr := NewReader(b)
+			if _, err := tr.Next(); err != nil {
+				t.Fatalf("unexpected Next error: %v", err)
+			}
+			if err := hdr.PunchSparseHoles(dst); err != nil {
+				t.Fatalf("unexpected PunchSparseHoles error: %v", err)
+			}
+			if _, err := tr.WriteTo(dst); err != nil {
+				t.Fatalf("unexpected Copy error: %v", err)
+			}
+
+			// Verify the sparse file matches.
+			// Even if the OS and underlying FS do not support sparse files,
+			// the content should still match (i.e., holes read as zeros).
+			got, err := ioutil.ReadFile(dst.Name())
+			if err != nil {
+				t.Fatalf("unexpected ReadFile error: %v", err)
+			}
+			want, err := ioutil.ReadFile(src.Name())
+			if err != nil {
+				t.Fatalf("unexpected ReadFile error: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatal("sparse files mismatch")
+			}
+
+			// Detect and compare the sparse holes.
+			if err := hdr.DetectSparseHoles(dst); err != nil {
+				t.Fatalf("unexpected DetectSparseHoles error: %v", err)
+			}
+			if sparseSupport && sysSparseDetect != nil {
+				if len(sph) > 0 && sph[len(sph)-1].Length == 0 {
+					sph = sph[:len(sph)-1]
+				}
+				if len(hdr.SparseHoles) != len(sph) {
+					t.Fatalf("len(SparseHoles) = %d, want %d", len(hdr.SparseHoles), len(sph))
+				}
+				for j, got := range hdr.SparseHoles {
+					// Each FS has their own block size, so these may not match.
+					want := sph[j]
+					if got.Offset < want.Offset {
+						t.Errorf("index %d, StartOffset = %d, want <%d", j, got.Offset, want.Offset)
+					}
+					if got.endOffset() > want.endOffset() {
+						t.Errorf("index %d, EndOffset = %d, want >%d", j, got.endOffset(), want.endOffset())
+					}
+				}
+			}
+		})
 	}
 }
 

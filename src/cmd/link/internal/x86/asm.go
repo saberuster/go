@@ -335,11 +335,6 @@ func adddynrel(ctxt *ld.Link, s *ld.Symbol, r *ld.Reloc) bool {
 			r.Type = 256 // ignore during relocsym
 			return true
 		}
-
-		if ld.Headtype == objabi.Hwindows && s.Size == int64(ld.SysArch.PtrSize) {
-			// nothing to do, the relocation will be laid out in pereloc1
-			return true
-		}
 	}
 
 	return false
@@ -714,10 +709,7 @@ func asmb(ctxt *ld.Link) {
 			sym := ctxt.Syms.Lookup("pclntab", 0)
 			if sym != nil {
 				ld.Lcsize = int32(len(sym.P))
-				for i := 0; int32(i) < ld.Lcsize; i++ {
-					ld.Cput(sym.P[i])
-				}
-
+				ld.Cwrite(sym.P)
 				ld.Cflush()
 			}
 

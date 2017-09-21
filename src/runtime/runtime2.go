@@ -357,7 +357,7 @@ type g struct {
 	sysexitticks   int64    // cputicks when syscall has returned (for tracing)
 	traceseq       uint64   // trace event sequencer
 	tracelastp     puintptr // last P emitted an event for this goroutine
-	lockedm        *m
+	lockedm        muintptr
 	sig            uint32
 	writebuf       []byte
 	sigcode0       uintptr
@@ -414,7 +414,9 @@ type m struct {
 	newSigstack   bool // minit on C thread called sigaltstack
 	printlock     int8
 	incgo         bool // m is executing a cgo call
-	fastrand      uint32
+	fastrand      [2]uint32
+	needextram    bool
+	traceback     uint8
 	ncgocall      uint64      // number of cgo calls in total
 	ncgo          int32       // number of cgo calls currently in progress
 	cgoCallersUse uint32      // if non-zero, cgoCallers in use temporarily
@@ -423,15 +425,13 @@ type m struct {
 	alllink       *m // on allm
 	schedlink     muintptr
 	mcache        *mcache
-	lockedg       *g
-	createstack   [32]uintptr // stack that created this thread.
-	freglo        [16]uint32  // d[i] lsb and f[i]
-	freghi        [16]uint32  // d[i] msb and f[i+16]
-	fflag         uint32      // floating point compare flags
-	locked        uint32      // tracking for lockosthread
-	nextwaitm     uintptr     // next m waiting for lock
-	needextram    bool
-	traceback     uint8
+	lockedg       guintptr
+	createstack   [32]uintptr    // stack that created this thread.
+	freglo        [16]uint32     // d[i] lsb and f[i]
+	freghi        [16]uint32     // d[i] msb and f[i+16]
+	fflag         uint32         // floating point compare flags
+	locked        uint32         // tracking for lockosthread
+	nextwaitm     uintptr        // next m waiting for lock
 	waitunlockf   unsafe.Pointer // todo go func(*g, unsafe.pointer) bool
 	waitlock      unsafe.Pointer
 	waittraceev   byte

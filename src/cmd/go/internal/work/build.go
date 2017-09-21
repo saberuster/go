@@ -356,8 +356,11 @@ func BuildModeInit() {
 			codegenArg = "-fPIC"
 		} else {
 			switch platform {
-			case "linux/amd64", "linux/arm", "linux/arm64", "linux/386", "linux/s390x",
+			case "linux/amd64", "linux/arm", "linux/arm64", "linux/386", "linux/s390x", "linux/ppc64le",
 				"android/amd64", "android/arm", "android/arm64", "android/386":
+			case "darwin/amd64":
+				// Skip DWARF generation due to #21647
+				cfg.BuildLdflags = append(cfg.BuildLdflags, "-w")
 			default:
 				base.Fatalf("-buildmode=plugin not supported on %s\n", platform)
 			}
@@ -652,7 +655,7 @@ type Builder struct {
 	WorkDir     string               // the temporary work directory (ends in filepath.Separator)
 	actionCache map[cacheKey]*Action // a cache of already-constructed actions
 	mkdirCache  map[string]bool      // a cache of created directories
-	flagCache   map[string]bool      // a cache of supported compiler flags
+	flagCache   map[[2]string]bool   // a cache of supported compiler flags
 	Print       func(args ...interface{}) (int, error)
 
 	output    sync.Mutex
@@ -2958,7 +2961,7 @@ func (tools gccgoToolchain) link(b *Builder, root *Action, out string, allaction
 		// libffi.
 		ldflags = append(ldflags, "-Wl,-r", "-nostdlib", "-Wl,--whole-archive", "-lgolibbegin", "-Wl,--no-whole-archive")
 
-		if nopie := b.gccNoPie(); nopie != "" {
+		if nopie := b.gccNoPie([]string{tools.linker()}); nopie != "" {
 			ldflags = append(ldflags, nopie)
 		}
 
@@ -3134,23 +3137,23 @@ func (b *Builder) gccld(p *load.Package, out string, flags []string, objs []stri
 // gccCmd returns a gcc command line prefix
 // defaultCC is defined in zdefaultcc.go, written by cmd/dist.
 func (b *Builder) GccCmd(objdir string) []string {
-	return b.ccompilerCmd("CC", cfg.DefaultCC, objdir)
+	return b.compilerCmd("CC", cfg.DefaultCC, objdir)
 }
 
 // gxxCmd returns a g++ command line prefix
 // defaultCXX is defined in zdefaultcc.go, written by cmd/dist.
 func (b *Builder) GxxCmd(objdir string) []string {
-	return b.ccompilerCmd("CXX", cfg.DefaultCXX, objdir)
+	return b.compilerCmd("CXX", cfg.DefaultCXX, objdir)
 }
 
 // gfortranCmd returns a gfortran command line prefix.
 func (b *Builder) gfortranCmd(objdir string) []string {
-	return b.ccompilerCmd("FC", "gfortran", objdir)
+	return b.compilerCmd("FC", "gfortran", objdir)
 }
 
-// ccompilerCmd returns a command line prefix for the given environment
+// compilerCmd returns a command line prefix for the given environment
 // variable and using the default command when the variable is empty.
-func (b *Builder) ccompilerCmd(envvar, defcmd, objdir string) []string {
+func (b *Builder) compilerCmd(envvar, defcmd, objdir string) []string {
 	// NOTE: env.go's mkEnv knows that the first three
 	// strings returned are "gcc", "-I", objdir (and cuts them off).
 
@@ -3176,11 +3179,11 @@ func (b *Builder) ccompilerCmd(envvar, defcmd, objdir string) []string {
 	}
 
 	// disable ASCII art in clang errors, if possible
-	if b.gccSupportsFlag("-fno-caret-diagnostics") {
+	if b.gccSupportsFlag(compiler, "-fno-caret-diagnostics") {
 		a = append(a, "-fno-caret-diagnostics")
 	}
 	// clang is too smart about command-line arguments
-	if b.gccSupportsFlag("-Qunused-arguments") {
+	if b.gccSupportsFlag(compiler, "-Qunused-arguments") {
 		a = append(a, "-Qunused-arguments")
 	}
 
@@ -3188,13 +3191,13 @@ func (b *Builder) ccompilerCmd(envvar, defcmd, objdir string) []string {
 	a = append(a, "-fmessage-length=0")
 
 	// Tell gcc not to include the work directory in object files.
-	if b.gccSupportsFlag("-fdebug-prefix-map=a=b") {
+	if b.gccSupportsFlag(compiler, "-fdebug-prefix-map=a=b") {
 		a = append(a, "-fdebug-prefix-map="+b.WorkDir+"=/tmp/go-build")
 	}
 
 	// Tell gcc not to include flags in object files, which defeats the
 	// point of -fdebug-prefix-map above.
-	if b.gccSupportsFlag("-gno-record-gcc-switches") {
+	if b.gccSupportsFlag(compiler, "-gno-record-gcc-switches") {
 		a = append(a, "-gno-record-gcc-switches")
 	}
 
@@ -3212,21 +3215,23 @@ func (b *Builder) ccompilerCmd(envvar, defcmd, objdir string) []string {
 // with PIE (position independent executables) enabled by default,
 // -no-pie must be passed when doing a partial link with -Wl,-r.
 // But -no-pie is not supported by all compilers, and clang spells it -nopie.
-func (b *Builder) gccNoPie() string {
-	if b.gccSupportsFlag("-no-pie") {
+func (b *Builder) gccNoPie(linker []string) string {
+	if b.gccSupportsFlag(linker, "-no-pie") {
 		return "-no-pie"
 	}
-	if b.gccSupportsFlag("-nopie") {
+	if b.gccSupportsFlag(linker, "-nopie") {
 		return "-nopie"
 	}
 	return ""
 }
 
 // gccSupportsFlag checks to see if the compiler supports a flag.
-func (b *Builder) gccSupportsFlag(flag string) bool {
+func (b *Builder) gccSupportsFlag(compiler []string, flag string) bool {
+	key := [2]string{compiler[0], flag}
+
 	b.exec.Lock()
 	defer b.exec.Unlock()
-	if b, ok := b.flagCache[flag]; ok {
+	if b, ok := b.flagCache[key]; ok {
 		return b
 	}
 	if b.flagCache == nil {
@@ -3239,9 +3244,9 @@ func (b *Builder) gccSupportsFlag(flag string) bool {
 				return false
 			}
 		}
-		b.flagCache = make(map[string]bool)
+		b.flagCache = make(map[[2]string]bool)
 	}
-	cmdArgs := append(envList("CC", cfg.DefaultCC), flag, "-c", "trivial.c")
+	cmdArgs := append(compiler, flag, "-c", "trivial.c")
 	if cfg.BuildN || cfg.BuildX {
 		b.Showcmd(b.WorkDir, "%s", joinUnambiguously(cmdArgs))
 		if cfg.BuildN {
@@ -3253,7 +3258,7 @@ func (b *Builder) gccSupportsFlag(flag string) bool {
 	cmd.Env = base.MergeEnvLists([]string{"LC_ALL=C"}, base.EnvForDir(cmd.Dir, os.Environ()))
 	out, err := cmd.CombinedOutput()
 	supported := err == nil && !bytes.Contains(out, []byte("unrecognized"))
-	b.flagCache[flag] = supported
+	b.flagCache[key] = supported
 	return supported
 }
 
@@ -3455,12 +3460,6 @@ func (b *Builder) cgo(a *Action, cgoExe, objdir string, pcCFLAGS, pcLDFLAGS, cgo
 		}
 		outGo = append(outGo, importGo)
 
-		ofile := objdir + "_all.o"
-		if err := b.collect(p, objdir, ofile, cgoLDFLAGS, outObj); err != nil {
-			return nil, nil, err
-		}
-		outObj = []string{ofile}
-
 	case "gccgo":
 		defunC := objdir + "_cgo_defun.c"
 		defunObj := objdir + "_cgo_defun.o"
@@ -3504,65 +3503,6 @@ func (b *Builder) dynimport(p *load.Package, objdir, importGo, cgoExe string, cf
 		cgoflags = []string{"-dynlinker"} // record path to dynamic linker
 	}
 	return b.run(p.Dir, p.ImportPath, nil, cfg.BuildToolexec, cgoExe, "-dynpackage", p.Name, "-dynimport", dynobj, "-dynout", importGo, cgoflags)
-}
-
-// collect partially links the object files outObj into a single
-// relocatable object file named ofile.
-func (b *Builder) collect(p *load.Package, objdir, ofile string, cgoLDFLAGS, outObj []string) error {
-	// When linking relocatable objects, various flags need to be
-	// filtered out as they are inapplicable and can cause some linkers
-	// to fail.
-	var ldflags []string
-	for i := 0; i < len(cgoLDFLAGS); i++ {
-		f := cgoLDFLAGS[i]
-		switch {
-		// skip "-lc" or "-l somelib"
-		case strings.HasPrefix(f, "-l"):
-			if f == "-l" {
-				i++
-			}
-		// skip "-framework X" on Darwin
-		case cfg.Goos == "darwin" && f == "-framework":
-			i++
-		// skip "*.{dylib,so,dll,o,a}"
-		case strings.HasSuffix(f, ".dylib"),
-			strings.HasSuffix(f, ".so"),
-			strings.HasSuffix(f, ".dll"),
-			strings.HasSuffix(f, ".o"),
-			strings.HasSuffix(f, ".a"):
-		// Remove any -fsanitize=foo flags.
-		// Otherwise the compiler driver thinks that we are doing final link
-		// and links sanitizer runtime into the object file. But we are not doing
-		// the final link, we will link the resulting object file again. And
-		// so the program ends up with two copies of sanitizer runtime.
-		// See issue 8788 for details.
-		case strings.HasPrefix(f, "-fsanitize="):
-			continue
-		// runpath flags not applicable unless building a shared
-		// object or executable; see issue 12115 for details. This
-		// is necessary as Go currently does not offer a way to
-		// specify the set of LDFLAGS that only apply to shared
-		// objects.
-		case strings.HasPrefix(f, "-Wl,-rpath"):
-			if f == "-Wl,-rpath" || f == "-Wl,-rpath-link" {
-				// Skip following argument to -rpath* too.
-				i++
-			}
-		default:
-			ldflags = append(ldflags, f)
-		}
-	}
-
-	ldflags = append(ldflags, "-Wl,-r", "-nostdlib")
-
-	if flag := b.gccNoPie(); flag != "" {
-		ldflags = append(ldflags, flag)
-	}
-
-	// We are creating an object file, so we don't want a build ID.
-	ldflags = b.disableBuildID(ldflags)
-
-	return b.gccld(p, ofile, ldflags, outObj)
 }
 
 // Run SWIG on all SWIG input files.
@@ -3839,7 +3779,11 @@ func InstrumentInit() {
 		os.Exit(2)
 	}
 	if !cfg.BuildContext.CgoEnabled {
-		fmt.Fprintf(os.Stderr, "go %s: -race requires cgo; enable cgo by setting CGO_ENABLED=1\n", flag.Args()[0])
+		instrFlag := "-race"
+		if cfg.BuildMSan {
+			instrFlag = "-msan"
+		}
+		fmt.Fprintf(os.Stderr, "go %s: %s requires cgo; enable cgo by setting CGO_ENABLED=1\n", flag.Args()[0], instrFlag)
 		os.Exit(2)
 	}
 	if cfg.BuildRace {

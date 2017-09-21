@@ -184,11 +184,27 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		ssa.OpARMSUBD,
 		ssa.OpARMMULF,
 		ssa.OpARMMULD,
+		ssa.OpARMNMULF,
+		ssa.OpARMNMULD,
 		ssa.OpARMDIVF,
 		ssa.OpARMDIVD:
 		r := v.Reg()
 		r1 := v.Args[0].Reg()
 		r2 := v.Args[1].Reg()
+		p := s.Prog(v.Op.Asm())
+		p.From.Type = obj.TYPE_REG
+		p.From.Reg = r2
+		p.Reg = r1
+		p.To.Type = obj.TYPE_REG
+		p.To.Reg = r
+	case ssa.OpARMMULAF, ssa.OpARMMULAD, ssa.OpARMMULSF, ssa.OpARMMULSD:
+		r := v.Reg()
+		r0 := v.Args[0].Reg()
+		r1 := v.Args[1].Reg()
+		r2 := v.Args[2].Reg()
+		if r != r0 {
+			v.Fatalf("result and addend are not in the same register: %v", v.LongString())
+		}
 		p := s.Prog(v.Op.Asm())
 		p.From.Type = obj.TYPE_REG
 		p.From.Reg = r2
@@ -477,10 +493,10 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		switch v.Aux.(type) {
 		default:
 			v.Fatalf("aux is of unknown type %T", v.Aux)
-		case *ssa.ExternSymbol:
+		case *obj.LSym:
 			wantreg = "SB"
 			gc.AddAux(&p.From, v)
-		case *ssa.ArgSymbol, *ssa.AutoSymbol:
+		case *gc.Node:
 			wantreg = "SP"
 			gc.AddAux(&p.From, v)
 		case nil:
