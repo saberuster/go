@@ -443,9 +443,6 @@ func (c dwCtxt) AddString(s dwarf.Sym, v string) {
 	ls.WriteString(c.Link, ls.Size, len(v), v)
 	ls.WriteInt(c.Link, ls.Size, 1, 0)
 }
-func (c dwCtxt) SymValue(s dwarf.Sym) int64 {
-	return 0
-}
 func (c dwCtxt) AddAddress(s dwarf.Sym, data interface{}, value int64) {
 	ls := s.(*LSym)
 	size := c.PtrSize()
@@ -498,4 +495,17 @@ func (ctxt *Link) populateDWARF(curfn interface{}, s *LSym) {
 	if err != nil {
 		ctxt.Diag("emitting DWARF for %s failed: %v", s.Name, err)
 	}
+}
+
+// DwarfIntConst creates a link symbol for an integer constant with the
+// given name, type and value.
+func (ctxt *Link) DwarfIntConst(myimportpath, name, typename string, val int64) {
+	if myimportpath == "" {
+		return
+	}
+	s := ctxt.LookupInit(dwarf.ConstInfoPrefix+myimportpath, func(s *LSym) {
+		s.Type = objabi.SDWARFINFO
+		ctxt.Data = append(ctxt.Data, s)
+	})
+	dwarf.PutIntConst(dwCtxt{ctxt}, s, ctxt.Lookup(dwarf.InfoPrefix+typename), myimportpath+"."+name, val)
 }

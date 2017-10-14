@@ -139,6 +139,7 @@ func Main(archInit func(*Arch)) {
 
 	Ctxt = obj.Linknew(thearch.LinkArch)
 	Ctxt.DiagFunc = yyerror
+	Ctxt.DiagFlush = flusherrors
 	Ctxt.Bso = bufio.NewWriter(os.Stdout)
 
 	localpkg = types.NewPkg("", "")
@@ -186,7 +187,7 @@ func Main(archInit func(*Arch)) {
 	objabi.Flagcount("K", "debug missing line numbers", &Debug['K'])
 	objabi.Flagcount("N", "disable optimizations", &Debug['N'])
 	flag.BoolVar(&Debug_asm, "S", false, "print assembly listing")
-	objabi.Flagfn0("V", "print compiler version", doversion)
+	objabi.AddVersionFlag() // -V
 	objabi.Flagcount("W", "debug parse tree after type checking", &Debug['W'])
 	flag.StringVar(&asmhdr, "asmhdr", "", "write assembly header to `file`")
 	flag.StringVar(&buildid, "buildid", "", "record `id` as the build id in the export metadata")
@@ -616,7 +617,7 @@ func Main(archInit func(*Arch)) {
 			return largeStackFrames[i].Before(largeStackFrames[j])
 		})
 		for _, largePos := range largeStackFrames {
-			yyerrorl(largePos, "stack frame too large (>2GB)")
+			yyerrorl(largePos, "stack frame too large (>1GB)")
 		}
 	}
 

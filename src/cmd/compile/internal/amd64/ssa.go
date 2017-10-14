@@ -795,6 +795,28 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		}
 	case ssa.OpAMD64CALLstatic, ssa.OpAMD64CALLclosure, ssa.OpAMD64CALLinter:
 		s.Call(v)
+
+	case ssa.OpAMD64LoweredGetCallerPC:
+		p := s.Prog(x86.AMOVQ)
+		p.From.Type = obj.TYPE_MEM
+		p.From.Offset = -8 // PC is stored 8 bytes below first parameter.
+		p.From.Name = obj.NAME_PARAM
+		p.To.Type = obj.TYPE_REG
+		p.To.Reg = v.Reg()
+
+	case ssa.OpAMD64LoweredGetCallerSP:
+		// caller's SP is the address of the first arg
+		mov := x86.AMOVQ
+		if gc.Widthptr == 4 {
+			mov = x86.AMOVL
+		}
+		p := s.Prog(mov)
+		p.From.Type = obj.TYPE_ADDR
+		p.From.Offset = -gc.Ctxt.FixedFrameSize() // 0 on amd64, just to be consistent with other architectures
+		p.From.Name = obj.NAME_PARAM
+		p.To.Type = obj.TYPE_REG
+		p.To.Reg = v.Reg()
+
 	case ssa.OpAMD64NEGQ, ssa.OpAMD64NEGL,
 		ssa.OpAMD64BSWAPQ, ssa.OpAMD64BSWAPL,
 		ssa.OpAMD64NOTQ, ssa.OpAMD64NOTL:
@@ -832,6 +854,7 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		p.From.Reg = v.Args[0].Reg()
 		p.To.Type = obj.TYPE_REG
 		p.To.Reg = v.Reg()
+
 	case ssa.OpAMD64SETEQ, ssa.OpAMD64SETNE,
 		ssa.OpAMD64SETL, ssa.OpAMD64SETLE,
 		ssa.OpAMD64SETG, ssa.OpAMD64SETGE,
@@ -842,6 +865,16 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		p := s.Prog(v.Op.Asm())
 		p.To.Type = obj.TYPE_REG
 		p.To.Reg = v.Reg()
+
+	case ssa.OpAMD64SETEQmem, ssa.OpAMD64SETNEmem,
+		ssa.OpAMD64SETLmem, ssa.OpAMD64SETLEmem,
+		ssa.OpAMD64SETGmem, ssa.OpAMD64SETGEmem,
+		ssa.OpAMD64SETBmem, ssa.OpAMD64SETBEmem,
+		ssa.OpAMD64SETAmem, ssa.OpAMD64SETAEmem:
+		p := s.Prog(v.Op.Asm())
+		p.To.Type = obj.TYPE_MEM
+		p.To.Reg = v.Args[0].Reg()
+		gc.AddAux(&p.To, v)
 
 	case ssa.OpAMD64SETNEF:
 		p := s.Prog(v.Op.Asm())

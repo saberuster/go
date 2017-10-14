@@ -229,7 +229,7 @@ func TestFormats(t *testing.T) {
 			}
 		}
 		if mismatch {
-			t.Errorf("knownFormats is out of date; please run with -v to regenerate")
+			t.Errorf("knownFormats is out of date; please 'go test -v fmt_test.go > foo', then extract new definition of knownFormats from foo")
 		}
 	}
 
@@ -572,14 +572,12 @@ var knownFormats = map[string]string{
 	"*cmd/compile/internal/ssa.Block %v":              "",
 	"*cmd/compile/internal/ssa.Func %s":               "",
 	"*cmd/compile/internal/ssa.Func %v":               "",
-	"*cmd/compile/internal/ssa.FuncDebug %v":          "",
 	"*cmd/compile/internal/ssa.LocalSlot %+v":         "",
 	"*cmd/compile/internal/ssa.LocalSlot %v":          "",
 	"*cmd/compile/internal/ssa.Register %s":           "",
 	"*cmd/compile/internal/ssa.SparseTreeNode %v":     "",
 	"*cmd/compile/internal/ssa.Value %s":              "",
 	"*cmd/compile/internal/ssa.Value %v":              "",
-	"*cmd/compile/internal/ssa.VarLoc %+v":            "",
 	"*cmd/compile/internal/ssa.VarLoc %v":             "",
 	"*cmd/compile/internal/ssa.sparseTreeMapEntry %v": "",
 	"*cmd/compile/internal/types.Field %p":            "",
@@ -639,6 +637,7 @@ var knownFormats = map[string]string{
 	"cmd/compile/internal/gc.Val %v":                  "",
 	"cmd/compile/internal/gc.fmtMode %d":              "",
 	"cmd/compile/internal/gc.initKind %d":             "",
+	"cmd/compile/internal/gc.locID %v":                "",
 	"cmd/compile/internal/ssa.BranchPrediction %d":    "",
 	"cmd/compile/internal/ssa.Edge %v":                "",
 	"cmd/compile/internal/ssa.GCNode %v":              "",
@@ -684,6 +683,7 @@ var knownFormats = map[string]string{
 	"int32 %d":                                        "",
 	"int32 %v":                                        "",
 	"int32 %x":                                        "",
+	"int64 %.5d":                                      "",
 	"int64 %+d":                                       "",
 	"int64 %-10d":                                     "",
 	"int64 %X":                                        "",

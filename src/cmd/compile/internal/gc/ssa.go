@@ -205,6 +205,12 @@ func buildssa(fn *Node, worker int) *ssa.Func {
 		s.popLine()
 	}
 
+	for _, b := range s.f.Blocks {
+		if b.Pos != src.NoXPos {
+			updateUnsetPredPos(b)
+		}
+	}
+
 	s.insertPhis()
 
 	// Don't carry reference this around longer than necessary
@@ -213,6 +219,30 @@ func buildssa(fn *Node, worker int) *ssa.Func {
 	// Main call to ssa package to compile function
 	ssa.Compile(s.f)
 	return s.f
+}
+
+func updateUnsetPredPos(b *ssa.Block) {
+	for _, e := range b.Preds {
+		p := e.Block()
+		if p.Pos == src.NoXPos && p.Kind == ssa.BlockPlain {
+			pos := b.Pos
+			// TODO: This ought to be produce a better result, but it causes
+			// line 46 ("scanner := bufio.NewScanner(reader)")
+			// to drop out of gdb-dbg and dlv-dbg debug-next traces for hist.go.
+			for _, v := range b.Values {
+				if v.Op == ssa.OpVarDef || v.Op == ssa.OpVarKill || v.Op == ssa.OpVarLive || v.Op == ssa.OpCopy && v.Type == types.TypeMem {
+					continue
+				}
+				if v.Pos != src.NoXPos {
+					pos = v.Pos
+					break
+				}
+			}
+			p.Pos = pos
+			updateUnsetPredPos(p) // We do not expect long chains of these, thus recursion is okay.
+		}
+	}
+	return
 }
 
 type state struct {
@@ -263,6 +293,8 @@ type state struct {
 
 	// line number stack. The current line number is top of stack
 	line []src.XPos
+	// the last line number processed; it may have been popped
+	lastPos src.XPos
 
 	// list of panic calls by function name and line number.
 	// Used to deduplicate panic calls.
@@ -277,7 +309,7 @@ type state struct {
 
 type funcLine struct {
 	f    *obj.LSym
-	file string
+	base *src.PosBase
 	line uint
 }
 
@@ -344,7 +376,14 @@ func (s *state) endBlock() *ssa.Block {
 	s.defvars[b.ID] = s.vars
 	s.curBlock = nil
 	s.vars = nil
-	b.Pos = s.peekPos()
+	if len(b.Values) == 0 && b.Kind == ssa.BlockPlain {
+		// Empty plain blocks get the line of their successor (handled after all blocks created),
+		// except for increment blocks in For statements (handled in ssa conversion of OFOR),
+		// and for blocks ending in GOTO/BREAK/CONTINUE.
+		b.Pos = src.NoXPos
+	} else {
+		b.Pos = s.lastPos
+	}
 	return b
 }
 
@@ -357,7 +396,10 @@ func (s *state) pushLine(line src.XPos) {
 		if Debug['K'] != 0 {
 			Warn("buildssa: unknown position (line 0)")
 		}
+	} else {
+		s.lastPos = line
 	}
+
 	s.line = append(s.line, line)
 }
 
@@ -515,8 +557,11 @@ func (s *state) stmtList(l Nodes) {
 
 // stmt converts the statement n to SSA and adds it to s.
 func (s *state) stmt(n *Node) {
-	s.pushLine(n.Pos)
-	defer s.popLine()
+	if !(n.Op == OVARKILL || n.Op == OVARLIVE) {
+		// OVARKILL and OVARLIVE are invisible to the programmer, so we don't use their line numbers to avoid confusion in debugging.
+		s.pushLine(n.Pos)
+		defer s.popLine()
+	}
 
 	// If s.curBlock is nil, and n isn't a label (which might have an associated goto somewhere),
 	// then this code is dead. Stop here.
@@ -629,6 +674,7 @@ func (s *state) stmt(n *Node) {
 		}
 
 		b := s.endBlock()
+		b.Pos = s.lastPos // Do this even if b is an empty block.
 		b.AddEdgeTo(lab.target)
 
 	case OAS:
@@ -780,7 +826,7 @@ func (s *state) stmt(n *Node) {
 		s.stmtList(n.List)
 		b := s.exit()
 		b.Kind = ssa.BlockRetJmp // override BlockRet
-		b.Aux = n.Left.Sym.Linksym()
+		b.Aux = n.Sym.Linksym()
 
 	case OCONTINUE, OBREAK:
 		var to *ssa.Block
@@ -805,6 +851,7 @@ func (s *state) stmt(n *Node) {
 		}
 
 		b := s.endBlock()
+		b.Pos = s.lastPos // Do this even if b is an empty block.
 		b.AddEdgeTo(to)
 
 	case OFOR, OFORUNTIL:
@@ -870,6 +917,11 @@ func (s *state) stmt(n *Node) {
 		}
 		if b := s.endBlock(); b != nil {
 			b.AddEdgeTo(bCond)
+			// It can happen that bIncr ends in a block containing only VARKILL,
+			// and that muddles the debugging experience.
+			if n.Op != OFORUNTIL && b.Pos == src.NoXPos {
+				b.Pos = bCond.Pos
+			}
 		}
 
 		if n.Op == OFORUNTIL {
@@ -2584,17 +2636,28 @@ func init() {
 		},
 		all...)
 
+	addF("runtime", "getcallerpc",
+		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
+			return s.newValue0(ssa.OpGetCallerPC, s.f.Config.Types.Uintptr)
+		}, sys.AMD64, sys.I386)
+
+	add("runtime", "getcallersp",
+		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
+			return s.newValue0(ssa.OpGetCallerSP, s.f.Config.Types.Uintptr)
+		},
+		all...)
+
 	/******** runtime/internal/sys ********/
 	addF("runtime/internal/sys", "Ctz32",
 		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpCtz32, types.Types[TINT], args[0])
 		},
-		sys.AMD64, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS)
+		sys.AMD64, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64)
 	addF("runtime/internal/sys", "Ctz64",
 		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpCtz64, types.Types[TINT], args[0])
 		},
-		sys.AMD64, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS)
+		sys.AMD64, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64)
 	addF("runtime/internal/sys", "Bswap32",
 		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpBswap32, types.Types[TUINT32], args[0])
@@ -2613,41 +2676,40 @@ func init() {
 			s.vars[&memVar] = s.newValue1(ssa.OpSelect1, types.TypeMem, v)
 			return s.newValue1(ssa.OpSelect0, types.Types[TUINT32], v)
 		},
-		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS, sys.PPC64)
-
+		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS, sys.MIPS64, sys.PPC64)
 	addF("runtime/internal/atomic", "Load64",
 		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
 			v := s.newValue2(ssa.OpAtomicLoad64, types.NewTuple(types.Types[TUINT64], types.TypeMem), args[0], s.mem())
 			s.vars[&memVar] = s.newValue1(ssa.OpSelect1, types.TypeMem, v)
 			return s.newValue1(ssa.OpSelect0, types.Types[TUINT64], v)
 		},
-		sys.AMD64, sys.ARM64, sys.S390X, sys.PPC64)
+		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS64, sys.PPC64)
 	addF("runtime/internal/atomic", "Loadp",
 		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
 			v := s.newValue2(ssa.OpAtomicLoadPtr, types.NewTuple(s.f.Config.Types.BytePtr, types.TypeMem), args[0], s.mem())
 			s.vars[&memVar] = s.newValue1(ssa.OpSelect1, types.TypeMem, v)
 			return s.newValue1(ssa.OpSelect0, s.f.Config.Types.BytePtr, v)
 		},
-		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS, sys.PPC64)
+		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS, sys.MIPS64, sys.PPC64)
 
 	addF("runtime/internal/atomic", "Store",
 		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
 			s.vars[&memVar] = s.newValue3(ssa.OpAtomicStore32, types.TypeMem, args[0], args[1], s.mem())
 			return nil
 		},
-		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS, sys.PPC64)
+		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS, sys.MIPS64, sys.PPC64)
 	addF("runtime/internal/atomic", "Store64",
 		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
 			s.vars[&memVar] = s.newValue3(ssa.OpAtomicStore64, types.TypeMem, args[0], args[1], s.mem())
 			return nil
 		},
-		sys.AMD64, sys.ARM64, sys.S390X, sys.PPC64)
+		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS64, sys.PPC64)
 	addF("runtime/internal/atomic", "StorepNoWB",
 		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
 			s.vars[&memVar] = s.newValue3(ssa.OpAtomicStorePtrNoWB, types.TypeMem, args[0], args[1], s.mem())
 			return nil
 		},
-		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS)
+		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS, sys.MIPS64)
 
 	addF("runtime/internal/atomic", "Xchg",
 		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
@@ -2655,14 +2717,14 @@ func init() {
 			s.vars[&memVar] = s.newValue1(ssa.OpSelect1, types.TypeMem, v)
 			return s.newValue1(ssa.OpSelect0, types.Types[TUINT32], v)
 		},
-		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS, sys.PPC64)
+		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS, sys.MIPS64, sys.PPC64)
 	addF("runtime/internal/atomic", "Xchg64",
 		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
 			v := s.newValue3(ssa.OpAtomicExchange64, types.NewTuple(types.Types[TUINT64], types.TypeMem), args[0], args[1], s.mem())
 			s.vars[&memVar] = s.newValue1(ssa.OpSelect1, types.TypeMem, v)
 			return s.newValue1(ssa.OpSelect0, types.Types[TUINT64], v)
 		},
-		sys.AMD64, sys.ARM64, sys.S390X, sys.PPC64)
+		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS64, sys.PPC64)
 
 	addF("runtime/internal/atomic", "Xadd",
 		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
@@ -2670,14 +2732,14 @@ func init() {
 			s.vars[&memVar] = s.newValue1(ssa.OpSelect1, types.TypeMem, v)
 			return s.newValue1(ssa.OpSelect0, types.Types[TUINT32], v)
 		},
-		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS, sys.PPC64)
+		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS, sys.MIPS64, sys.PPC64)
 	addF("runtime/internal/atomic", "Xadd64",
 		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
 			v := s.newValue3(ssa.OpAtomicAdd64, types.NewTuple(types.Types[TUINT64], types.TypeMem), args[0], args[1], s.mem())
 			s.vars[&memVar] = s.newValue1(ssa.OpSelect1, types.TypeMem, v)
 			return s.newValue1(ssa.OpSelect0, types.Types[TUINT64], v)
 		},
-		sys.AMD64, sys.ARM64, sys.S390X, sys.PPC64)
+		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS64, sys.PPC64)
 
 	addF("runtime/internal/atomic", "Cas",
 		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
@@ -2685,14 +2747,14 @@ func init() {
 			s.vars[&memVar] = s.newValue1(ssa.OpSelect1, types.TypeMem, v)
 			return s.newValue1(ssa.OpSelect0, types.Types[TBOOL], v)
 		},
-		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS, sys.PPC64)
+		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS, sys.MIPS64, sys.PPC64)
 	addF("runtime/internal/atomic", "Cas64",
 		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
 			v := s.newValue4(ssa.OpAtomicCompareAndSwap64, types.NewTuple(types.Types[TBOOL], types.TypeMem), args[0], args[1], args[2], s.mem())
 			s.vars[&memVar] = s.newValue1(ssa.OpSelect1, types.TypeMem, v)
 			return s.newValue1(ssa.OpSelect0, types.Types[TBOOL], v)
 		},
-		sys.AMD64, sys.ARM64, sys.S390X, sys.PPC64)
+		sys.AMD64, sys.ARM64, sys.S390X, sys.MIPS64, sys.PPC64)
 
 	addF("runtime/internal/atomic", "And8",
 		func(s *state, n *Node, args []*ssa.Value) *ssa.Value {
@@ -3460,7 +3522,7 @@ func (s *state) check(cmp *ssa.Value, fn *obj.LSym) {
 	bNext := s.f.NewBlock(ssa.BlockPlain)
 	line := s.peekPos()
 	pos := Ctxt.PosTable.Pos(line)
-	fl := funcLine{f: fn, file: pos.Filename(), line: pos.Line()}
+	fl := funcLine{f: fn, base: pos.Base(), line: pos.Line()}
 	bPanic := s.panics[fl]
 	if bPanic == nil {
 		bPanic = s.f.NewBlock(ssa.BlockPlain)
@@ -4381,11 +4443,7 @@ func genssa(f *ssa.Func, pp *Progs) {
 
 	e := f.Frontend().(*ssafn)
 
-	// Generate GC bitmaps, except if the stack is too large,
-	// in which compilation will fail later anyway (issue 20529).
-	if e.stksize < maxStackSize {
-		s.stackMapIndex = liveness(e, f)
-	}
+	s.stackMapIndex = liveness(e, f)
 
 	// Remember where each block starts.
 	s.bstart = make([]*obj.Prog, f.NumBlocks())
@@ -4488,16 +4546,35 @@ func genssa(f *ssa.Func, pp *Progs) {
 	}
 
 	if Ctxt.Flag_locationlists {
-		for _, locList := range e.curfn.Func.DebugInfo.Variables {
-			for _, loc := range locList.Locations {
-				loc.StartProg = valueToProg[loc.Start.ID]
-				if loc.End == nil {
-					Fatalf("empty loc %v compiling %v", loc, f.Name)
-				}
-				loc.EndProg = valueToProg[loc.End.ID]
-				if !logLocationLists {
-					loc.Start = nil
-					loc.End = nil
+		for i := range f.Blocks {
+			blockDebug := e.curfn.Func.DebugInfo.Blocks[i]
+			for _, locList := range blockDebug.Variables {
+				for _, loc := range locList.Locations {
+					if loc.Start == ssa.BlockStart {
+						loc.StartProg = s.bstart[f.Blocks[i].ID]
+					} else {
+						loc.StartProg = valueToProg[loc.Start.ID]
+					}
+					if loc.End == nil {
+						Fatalf("empty loc %v compiling %v", loc, f.Name)
+					}
+
+					if loc.End == ssa.BlockEnd {
+						// If this variable was live at the end of the block, it should be
+						// live over the control flow instructions. Extend it up to the
+						// beginning of the next block.
+						// If this is the last block, then there's no Prog to use for it, and
+						// EndProg is unset.
+						if i < len(f.Blocks)-1 {
+							loc.EndProg = s.bstart[f.Blocks[i+1].ID]
+						}
+					} else {
+						loc.EndProg = valueToProg[loc.End.ID]
+					}
+					if !logLocationLists {
+						loc.Start = nil
+						loc.End = nil
+					}
 				}
 			}
 		}
@@ -4529,22 +4606,31 @@ func genssa(f *ssa.Func, pp *Progs) {
 			var buf bytes.Buffer
 			buf.WriteString("<code>")
 			buf.WriteString("<dl class=\"ssa-gen\">")
+			filename := ""
 			for p := pp.Text; p != nil; p = p.Link {
+				// Don't spam every line with the file name, which is often huge.
+				// Only print changes.
+				if f := p.FileName(); f != filename {
+					filename = f
+					buf.WriteString("<dt class=\"ssa-prog-src\"></dt><dd class=\"ssa-prog\">")
+					buf.WriteString(html.EscapeString("# " + filename))
+					buf.WriteString("</dd>")
+				}
+
 				buf.WriteString("<dt class=\"ssa-prog-src\">")
 				if v, ok := progToValue[p]; ok {
 					buf.WriteString(v.HTML())
 				} else if b, ok := progToBlock[p]; ok {
-					buf.WriteString(b.HTML())
+					buf.WriteString("<b>" + b.HTML() + "</b>")
 				}
 				buf.WriteString("</dt>")
 				buf.WriteString("<dd class=\"ssa-prog\">")
-				buf.WriteString(html.EscapeString(p.String()))
+				buf.WriteString(fmt.Sprintf("%.5d <span class=\"line-number\">(%s)</span> %s", p.Pc, p.LineNumber(), html.EscapeString(p.InstructionString())))
 				buf.WriteString("</dd>")
-				buf.WriteString("</li>")
 			}
 			buf.WriteString("</dl>")
 			buf.WriteString("</code>")
-			f.HTMLWriter.WriteColumn("genssa", buf.String())
+			f.HTMLWriter.WriteColumn("genssa", "ssa-prog", buf.String())
 			// pp.Text.Ctxt.LineHist.PrintFilenameOnly = saved
 		}
 	}
@@ -4619,6 +4705,7 @@ type FloatingEQNEJump struct {
 func (s *SSAGenState) oneFPJump(b *ssa.Block, jumps *FloatingEQNEJump) {
 	p := s.Prog(jumps.Jump)
 	p.To.Type = obj.TYPE_BRANCH
+	p.Pos = b.Pos
 	to := jumps.Index
 	s.Branches = append(s.Branches, Branch{p, b.Succs[to].Block()})
 }
@@ -4635,6 +4722,7 @@ func (s *SSAGenState) FPJump(b, next *ssa.Block, jumps *[2][2]FloatingEQNEJump) 
 		s.oneFPJump(b, &jumps[1][0])
 		s.oneFPJump(b, &jumps[1][1])
 		q := s.Prog(obj.AJMP)
+		q.Pos = b.Pos
 		q.To.Type = obj.TYPE_BRANCH
 		s.Branches = append(s.Branches, Branch{q, b.Succs[1].Block()})
 	}

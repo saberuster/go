@@ -37,6 +37,8 @@ var (
 	BuildV                 bool // -v flag
 	BuildWork              bool // -work flag
 	BuildX                 bool // -x flag
+
+	DebugActiongraph string // -debug-actiongraph flag (undocumented, unstable)
 )
 
 func init() {
@@ -127,4 +129,41 @@ func isGOROOT(path string) bool {
 		return false
 	}
 	return stat.IsDir()
+}
+
+// ExternalLinkingForced reports whether external linking is being
+// forced even for programs that do not use cgo.
+func ExternalLinkingForced() bool {
+	// Some targets must use external linking even inside GOROOT.
+	switch BuildContext.GOOS {
+	case "android":
+		return true
+	case "darwin":
+		switch BuildContext.GOARCH {
+		case "arm", "arm64":
+			return true
+		}
+	}
+
+	if !BuildContext.CgoEnabled {
+		return false
+	}
+	// Currently build modes c-shared, pie (on systems that do not
+	// support PIE with internal linking mode (currently all
+	// systems: issue #18968)), plugin, and -linkshared force
+	// external linking mode, as of course does
+	// -ldflags=-linkmode=external. External linking mode forces
+	// an import of runtime/cgo.
+	pieCgo := BuildBuildmode == "pie"
+	linkmodeExternal := false
+	for i, a := range BuildLdflags {
+		if a == "-linkmode=external" {
+			linkmodeExternal = true
+		}
+		if a == "-linkmode" && i+1 < len(BuildLdflags) && BuildLdflags[i+1] == "external" {
+			linkmodeExternal = true
+		}
+	}
+
+	return BuildBuildmode == "c-shared" || BuildBuildmode == "plugin" || pieCgo || BuildLinkshared || linkmodeExternal
 }

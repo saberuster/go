@@ -723,6 +723,19 @@ func (tg *testgoData) failSSH() {
 	tg.setenv("PATH", fmt.Sprintf("%v%c%v", fail, filepath.ListSeparator, os.Getenv("PATH")))
 }
 
+func TestBuildComplex(t *testing.T) {
+	// Simple smoke test for build configuration.
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.parallel()
+	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata"))
+	tg.run("build", "-x", "-o", os.DevNull, "complex")
+
+	if _, err := exec.LookPath("gccgo"); err == nil {
+		tg.run("build", "-x", "-o", os.DevNull, "-compiler=gccgo", "complex")
+	}
+}
+
 func TestFileLineInErrorMessages(t *testing.T) {
 	tg := testgo(t)
 	defer tg.cleanup()
@@ -1232,7 +1245,7 @@ func testMove(t *testing.T, vcs, url, base, config string) {
 	tg.runFail("get", "-d", "-u", url)
 	tg.grepStderr("is a custom import path for", "go get -d -u "+url+" failed for wrong reason")
 	tg.runFail("get", "-d", "-f", "-u", url)
-	tg.grepStderr("validating server certificate|not found", "go get -d -f -u "+url+" failed for wrong reason")
+	tg.grepStderr("validating server certificate|[nN]ot [fF]ound", "go get -d -f -u "+url+" failed for wrong reason")
 }
 
 func TestInternalPackageErrorsAreHandled(t *testing.T) {
@@ -1253,10 +1266,9 @@ func TestMoveGit(t *testing.T) {
 	testMove(t, "git", "rsc.io/pdf", "pdf", "rsc.io/pdf/.git/config")
 }
 
-// TODO(rsc): Set up a test case on bitbucket for hg.
-// func TestMoveHG(t *testing.T) {
-// 	testMove(t, "hg", "rsc.io/x86/x86asm", "x86", "rsc.io/x86/.hg/hgrc")
-// }
+func TestMoveHG(t *testing.T) {
+	testMove(t, "hg", "vcs-test.golang.org/go/custom-hg-hello", "custom-hg-hello", "vcs-test.golang.org/go/custom-hg-hello/.hg/hgrc")
+}
 
 // TODO(rsc): Set up a test case on SourceForge (?) for svn.
 // func testMoveSVN(t *testing.T) {
@@ -1383,6 +1395,25 @@ func TestGetGitDefaultBranch(t *testing.T) {
 	tg.run("get", "-d", "-u", importPath)
 	tg.runGit(repoDir, "branch", "--contains", "HEAD")
 	tg.grepStdout(`\* another-branch`, "not on correct default branch")
+}
+
+func TestAccidentalGitCheckout(t *testing.T) {
+	testenv.MustHaveExternalNetwork(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("skipping because git binary not found")
+	}
+
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.parallel()
+	tg.tempDir("src")
+	tg.setenv("GOPATH", tg.path("."))
+
+	tg.runFail("get", "-u", "vcs-test.golang.org/go/test1-svn-git")
+	tg.grepStderr("src[\\\\/]vcs-test.* uses git, but parent .*src[\\\\/]vcs-test.* uses svn", "get did not fail for right reason")
+
+	tg.runFail("get", "-u", "vcs-test.golang.org/go/test2-svn-git/test2main")
+	tg.grepStderr("src[\\\\/]vcs-test.* uses git, but parent .*src[\\\\/]vcs-test.* uses svn", "get did not fail for right reason")
 }
 
 func TestErrorMessageForSyntaxErrorInTestGoFileSaysFAIL(t *testing.T) {
@@ -1687,6 +1718,27 @@ func TestRejectRelativePathsInGOPATHCommandLinePackage(t *testing.T) {
 	tg.setenv("GOPATH", "testdata")
 	tg.runFail("build", "testdata/src/go-cmd-test/helloworld.go")
 	tg.grepStderr("GOPATH entry is relative", "expected an error message rejecting relative GOPATH entries")
+}
+
+// Issue 21928.
+func TestRejectBlankPathsInGOPATH(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+	sep := string(filepath.ListSeparator)
+	tg.setenv("GOPATH", " "+sep+filepath.Join(tg.pwd(), "testdata"))
+	tg.runFail("build", "go-cmd-test")
+	tg.grepStderr("GOPATH entry is relative", "expected an error message rejecting relative GOPATH entries")
+}
+
+// Issue 21928.
+func TestIgnoreEmptyPathsInGOPATH(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.creatingTemp("testdata/bin/go-cmd-test" + exeSuffix)
+	sep := string(filepath.ListSeparator)
+	tg.setenv("GOPATH", ""+sep+filepath.Join(tg.pwd(), "testdata"))
+	tg.run("install", "go-cmd-test")
+	tg.wantExecutable("testdata/bin/go-cmd-test"+exeSuffix, "go install go-cmd-test did not write to testdata/bin/go-cmd-test")
 }
 
 // Issue 4104.
@@ -3799,6 +3851,7 @@ func TestGoEnv(t *testing.T) {
 	tg := testgo(t)
 	tg.parallel()
 	defer tg.cleanup()
+	tg.setenv("GOOS", "freebsd") // to avoid invalid pair errors
 	tg.setenv("GOARCH", "arm")
 	tg.run("env", "GOARCH")
 	tg.grepStdout("^arm$", "GOARCH not honored")
@@ -4567,4 +4620,13 @@ func TestParallelNumber(t *testing.T) {
 			tg.grepBoth("-parallel can only be given", "go test -parallel with N<1 did not error")
 		})
 	}
+}
+
+func TestWrongGOOSErrorBeforeLoadError(t *testing.T) {
+	tg := testgo(t)
+	defer tg.cleanup()
+	tg.setenv("GOPATH", filepath.Join(tg.pwd(), "testdata"))
+	tg.setenv("GOOS", "windwos")
+	tg.runFail("build", "exclude")
+	tg.grepStderr("unsupported GOOS/GOARCH pair", "GOOS=windwos go build exclude did not report 'unsupported GOOS/GOARCH pair'")
 }

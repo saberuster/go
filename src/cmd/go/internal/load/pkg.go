@@ -20,9 +20,9 @@ import (
 	"unicode"
 
 	"cmd/go/internal/base"
-	"cmd/go/internal/buildid"
 	"cmd/go/internal/cfg"
 	"cmd/go/internal/str"
+	"cmd/internal/buildid"
 )
 
 var IgnoreImports bool // control whether we ignore imports in packages
@@ -42,7 +42,7 @@ type PackagePublic struct {
 	ImportComment string `json:",omitempty"` // path in import comment on package statement
 	Name          string `json:",omitempty"` // package name
 	Doc           string `json:",omitempty"` // package documentation string
-	Target        string `json:",omitempty"` // install path
+	Target        string `json:",omitempty"` // installed target for this package (may be executable)
 	Shlib         string `json:",omitempty"` // the shared library that contains this package (only set when -linkshared)
 	Goroot        bool   `json:",omitempty"` // is this package found in the Go root?
 	Standard      bool   `json:",omitempty"` // is this package part of the standard Go library?
@@ -93,14 +93,7 @@ type PackagePublic struct {
 type PackageInternal struct {
 	// Unexported fields are not part of the public API.
 	Build        *build.Package
-	Pkgdir       string     // overrides build.PkgDir
-	Imports      []*Package // this package's direct imports
-	GoFiles      []string   // GoFiles+CgoFiles+TestGoFiles+XTestGoFiles files, absolute paths
-	SFiles       []string
-	AllGoFiles   []string             // gofiles + IgnoredGoFiles, absolute paths
-	Target       string               // installed file for this package (may be executable)
-	Fake         bool                 // synthesized package
-	External     bool                 // synthesized external test package
+	Imports      []*Package           // this package's direct imports
 	ForceLibrary bool                 // this package is a library (even if named "main")
 	Cmdline      bool                 // defined by files listed on command line
 	Local        bool                 // imported via local path (./ or ../)
@@ -802,45 +795,27 @@ func FindVendor(path string) (index int, ok bool) {
 	return 0, false
 }
 
-type targetDir int
+type TargetDir int
 
 const (
-	ToRoot    targetDir = iota // to bin dir inside package root (default)
-	ToTool                     // GOROOT/pkg/tool
-	StalePath                  // the old import path; fail to build
+	ToTool    TargetDir = iota // to GOROOT/pkg/tool (default for cmd/*)
+	ToBin                      // to bin dir inside package root (default for non-cmd/*)
+	StalePath                  // an old import path; fail to build
 )
 
-// goTools is a map of Go program import path to install target directory.
-var GoTools = map[string]targetDir{
-	"cmd/addr2line": ToTool,
-	"cmd/api":       ToTool,
-	"cmd/asm":       ToTool,
-	"cmd/compile":   ToTool,
-	"cmd/cgo":       ToTool,
-	"cmd/cover":     ToTool,
-	"cmd/dist":      ToTool,
-	"cmd/doc":       ToTool,
-	"cmd/fix":       ToTool,
-	"cmd/link":      ToTool,
-	"cmd/newlink":   ToTool,
-	"cmd/nm":        ToTool,
-	"cmd/objdump":   ToTool,
-	"cmd/pack":      ToTool,
-	"cmd/pprof":     ToTool,
-	"cmd/trace":     ToTool,
-	"cmd/vet":       ToTool,
-	"code.google.com/p/go.tools/cmd/cover": StalePath,
-	"code.google.com/p/go.tools/cmd/godoc": StalePath,
-	"code.google.com/p/go.tools/cmd/vet":   StalePath,
-}
-
-var raceExclude = map[string]bool{
-	"runtime/race": true,
-	"runtime/msan": true,
-	"runtime/cgo":  true,
-	"cmd/cgo":      true,
-	"syscall":      true,
-	"errors":       true,
+// InstallTargetDir reports the target directory for installing the command p.
+func InstallTargetDir(p *Package) TargetDir {
+	if strings.HasPrefix(p.ImportPath, "code.google.com/p/go.tools/cmd/") {
+		return StalePath
+	}
+	if p.Goroot && strings.HasPrefix(p.ImportPath, "cmd/") && p.Name == "main" {
+		switch p.ImportPath {
+		case "cmd/go", "cmd/gofmt":
+			return ToBin
+		}
+		return ToTool
+	}
+	return ToBin
 }
 
 var cgoExclude = map[string]bool{
@@ -887,7 +862,7 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) {
 
 	if useBindir {
 		// Report an error when the old code.google.com/p/go.tools paths are used.
-		if GoTools[p.ImportPath] == StalePath {
+		if InstallTargetDir(p) == StalePath {
 			newPath := strings.Replace(p.ImportPath, "code.google.com/p/go.", "golang.org/x/", 1)
 			e := fmt.Sprintf("the %v command has moved; use %v instead.", p.ImportPath, newPath)
 			p.Error = &PackageError{Err: e}
@@ -901,125 +876,91 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) {
 		}
 		if p.Internal.Build.BinDir != "" {
 			// Install to GOBIN or bin of GOPATH entry.
-			p.Internal.Target = filepath.Join(p.Internal.Build.BinDir, elem)
+			p.Target = filepath.Join(p.Internal.Build.BinDir, elem)
 			if !p.Goroot && strings.Contains(elem, "/") && cfg.GOBIN != "" {
 				// Do not create $GOBIN/goos_goarch/elem.
-				p.Internal.Target = ""
+				p.Target = ""
 				p.Internal.GobinSubdir = true
 			}
 		}
-		if GoTools[p.ImportPath] == ToTool {
+		if InstallTargetDir(p) == ToTool {
 			// This is for 'go tool'.
 			// Override all the usual logic and force it into the tool directory.
-			p.Internal.Target = filepath.Join(cfg.GOROOTpkg, "tool", full)
+			p.Target = filepath.Join(cfg.GOROOTpkg, "tool", full)
 		}
-		if p.Internal.Target != "" && cfg.BuildContext.GOOS == "windows" {
-			p.Internal.Target += ".exe"
+		if p.Target != "" && cfg.BuildContext.GOOS == "windows" {
+			p.Target += ".exe"
 		}
 	} else if p.Internal.Local {
 		// Local import turned into absolute path.
 		// No permanent install target.
-		p.Internal.Target = ""
+		p.Target = ""
 	} else {
-		p.Internal.Target = p.Internal.Build.PkgObj
+		p.Target = p.Internal.Build.PkgObj
 		if cfg.BuildLinkshared {
-			shlibnamefile := p.Internal.Target[:len(p.Internal.Target)-2] + ".shlibname"
+			shlibnamefile := p.Target[:len(p.Target)-2] + ".shlibname"
 			shlib, err := ioutil.ReadFile(shlibnamefile)
+			if err != nil && !os.IsNotExist(err) {
+				base.Fatalf("reading shlibname: %v", err)
+			}
 			if err == nil {
 				libname := strings.TrimSpace(string(shlib))
 				if cfg.BuildContext.Compiler == "gccgo" {
 					p.Shlib = filepath.Join(p.Internal.Build.PkgTargetRoot, "shlibs", libname)
 				} else {
 					p.Shlib = filepath.Join(p.Internal.Build.PkgTargetRoot, libname)
-
 				}
-			} else if !os.IsNotExist(err) {
-				base.Fatalf("unexpected error reading %s: %v", shlibnamefile, err)
 			}
 		}
 	}
 
+	// Build augmented import list to add implicit dependencies.
+	// Be careful not to add imports twice, just to avoid confusion.
 	importPaths := p.Imports
-	// Packages that use cgo import runtime/cgo implicitly.
-	// Packages that use cgo also import syscall implicitly,
-	// to wrap errno.
-	// Exclude certain packages to avoid circular dependencies.
+	addImport := func(path string) {
+		for _, p := range importPaths {
+			if path == p {
+				return
+			}
+		}
+		importPaths = append(importPaths, path)
+	}
+
+	// Cgo translation adds imports of "runtime/cgo" and "syscall",
+	// except for certain packages, to avoid circular dependencies.
 	if len(p.CgoFiles) > 0 && (!p.Standard || !cgoExclude[p.ImportPath]) {
-		importPaths = append(importPaths, "runtime/cgo")
+		addImport("runtime/cgo")
 	}
 	if len(p.CgoFiles) > 0 && (!p.Standard || !cgoSyscallExclude[p.ImportPath]) {
-		importPaths = append(importPaths, "syscall")
+		addImport("syscall")
 	}
 
-	if cfg.BuildContext.CgoEnabled && p.Name == "main" && !p.Goroot {
-		// Currently build modes c-shared, pie (on systems that do not
-		// support PIE with internal linking mode (currently all
-		// systems: issue #18968)), plugin, and -linkshared force
-		// external linking mode, as of course does
-		// -ldflags=-linkmode=external. External linking mode forces
-		// an import of runtime/cgo.
-		pieCgo := cfg.BuildBuildmode == "pie"
-		linkmodeExternal := false
-		for i, a := range cfg.BuildLdflags {
-			if a == "-linkmode=external" {
-				linkmodeExternal = true
-			}
-			if a == "-linkmode" && i+1 < len(cfg.BuildLdflags) && cfg.BuildLdflags[i+1] == "external" {
-				linkmodeExternal = true
-			}
-		}
-		if cfg.BuildBuildmode == "c-shared" || cfg.BuildBuildmode == "plugin" || pieCgo || cfg.BuildLinkshared || linkmodeExternal {
-			importPaths = append(importPaths, "runtime/cgo")
+	// The linker loads implicit dependencies.
+	if p.Name == "main" && !p.Internal.ForceLibrary {
+		for _, dep := range LinkerDeps(p) {
+			addImport(dep)
 		}
 	}
 
-	// Everything depends on runtime, except runtime, its internal
-	// subpackages, and unsafe.
-	if !p.Standard || (p.ImportPath != "runtime" && !strings.HasPrefix(p.ImportPath, "runtime/internal/") && p.ImportPath != "unsafe") {
-		importPaths = append(importPaths, "runtime")
-		// When race detection enabled everything depends on runtime/race.
-		// Exclude certain packages to avoid circular dependencies.
-		if cfg.BuildRace && (!p.Standard || !raceExclude[p.ImportPath]) {
-			importPaths = append(importPaths, "runtime/race")
-		}
-		// MSan uses runtime/msan.
-		if cfg.BuildMSan && (!p.Standard || !raceExclude[p.ImportPath]) {
-			importPaths = append(importPaths, "runtime/msan")
-		}
-		// On ARM with GOARM=5, everything depends on math for the link.
-		if p.Name == "main" && cfg.Goarch == "arm" {
-			importPaths = append(importPaths, "math")
-		}
+	// If runtime/internal/sys/zversion.go changes, it very likely means the
+	// compiler has been recompiled with that new version, so all existing
+	// archives are now stale. Make everything appear to import runtime/internal/sys,
+	// so that in this situation everything will appear stale and get recompiled.
+	// Due to the rules for visibility of internal packages, things outside runtime
+	// must import runtime, and runtime imports runtime/internal/sys.
+	// Content-based staleness that includes a check of the compiler version
+	// will make this hack unnecessary; once that lands, this whole comment
+	// and switch statement should be removed.
+	switch {
+	case p.Standard && p.ImportPath == "runtime/internal/sys":
+		// nothing
+	case p.Standard && p.ImportPath == "unsafe":
+		// nothing - not a real package, and used by runtime
+	case p.Standard && strings.HasPrefix(p.ImportPath, "runtime"):
+		addImport("runtime/internal/sys")
+	default:
+		addImport("runtime")
 	}
-
-	// Runtime and its internal packages depend on runtime/internal/sys,
-	// so that they pick up the generated zversion.go file.
-	// This can be an issue particularly for runtime/internal/atomic;
-	// see issue 13655.
-	if p.Standard && (p.ImportPath == "runtime" || strings.HasPrefix(p.ImportPath, "runtime/internal/")) && p.ImportPath != "runtime/internal/sys" {
-		importPaths = append(importPaths, "runtime/internal/sys")
-	}
-
-	// Build list of full paths to all Go files in the package,
-	// for use by commands like go fmt.
-	p.Internal.GoFiles = str.StringList(p.GoFiles, p.CgoFiles, p.TestGoFiles, p.XTestGoFiles)
-	for i := range p.Internal.GoFiles {
-		p.Internal.GoFiles[i] = filepath.Join(p.Dir, p.Internal.GoFiles[i])
-	}
-	sort.Strings(p.Internal.GoFiles)
-
-	p.Internal.SFiles = str.StringList(p.SFiles)
-	for i := range p.Internal.SFiles {
-		p.Internal.SFiles[i] = filepath.Join(p.Dir, p.Internal.SFiles[i])
-	}
-	sort.Strings(p.Internal.SFiles)
-
-	p.Internal.AllGoFiles = str.StringList(p.IgnoredGoFiles)
-	for i := range p.Internal.AllGoFiles {
-		p.Internal.AllGoFiles[i] = filepath.Join(p.Dir, p.Internal.AllGoFiles[i])
-	}
-	p.Internal.AllGoFiles = append(p.Internal.AllGoFiles, p.Internal.GoFiles...)
-	sort.Strings(p.Internal.AllGoFiles)
 
 	// Check for case-insensitive collision of input files.
 	// To avoid problems on case-insensitive files, we reject any package
@@ -1117,9 +1058,8 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) {
 
 	// unsafe is a fake package.
 	if p.Standard && (p.ImportPath == "unsafe" || cfg.BuildContext.Compiler == "gccgo") {
-		p.Internal.Target = ""
+		p.Target = ""
 	}
-	p.Target = p.Internal.Target
 
 	// If cgo is not enabled, ignore cgo supporting sources
 	// just as we ignore go files containing import "C".
@@ -1135,12 +1075,31 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) {
 		// code; see issue #16050).
 	}
 
-	// The gc toolchain only permits C source files with cgo.
-	if len(p.CFiles) > 0 && !p.UsesCgo() && !p.UsesSwig() && cfg.BuildContext.Compiler == "gc" {
+	setError := func(msg string) {
 		p.Error = &PackageError{
 			ImportStack: stk.Copy(),
-			Err:         fmt.Sprintf("C source files not allowed when not using cgo or SWIG: %s", strings.Join(p.CFiles, " ")),
+			Err:         msg,
 		}
+	}
+
+	// The gc toolchain only permits C source files with cgo or SWIG.
+	if len(p.CFiles) > 0 && !p.UsesCgo() && !p.UsesSwig() && cfg.BuildContext.Compiler == "gc" {
+		setError(fmt.Sprintf("C source files not allowed when not using cgo or SWIG: %s", strings.Join(p.CFiles, " ")))
+		return
+	}
+
+	// C++, Objective-C, and Fortran source files are permitted only with cgo or SWIG,
+	// regardless of toolchain.
+	if len(p.CXXFiles) > 0 && !p.UsesCgo() && !p.UsesSwig() {
+		setError(fmt.Sprintf("C++ source files not allowed when not using cgo or SWIG: %s", strings.Join(p.CXXFiles, " ")))
+		return
+	}
+	if len(p.MFiles) > 0 && !p.UsesCgo() && !p.UsesSwig() {
+		setError(fmt.Sprintf("Objective-C source files not allowed when not using cgo or SWIG: %s", strings.Join(p.MFiles, " ")))
+		return
+	}
+	if len(p.FFiles) > 0 && !p.UsesCgo() && !p.UsesSwig() {
+		setError(fmt.Sprintf("Fortran source files not allowed when not using cgo or SWIG: %s", strings.Join(p.FFiles, " ")))
 		return
 	}
 
@@ -1149,17 +1108,20 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) {
 	if other := foldPath[fold]; other == "" {
 		foldPath[fold] = p.ImportPath
 	} else if other != p.ImportPath {
-		p.Error = &PackageError{
-			ImportStack: stk.Copy(),
-			Err:         fmt.Sprintf("case-insensitive import collision: %q and %q", p.ImportPath, other),
-		}
+		setError(fmt.Sprintf("case-insensitive import collision: %q and %q", p.ImportPath, other))
 		return
 	}
 
 	if p.BinaryOnly {
 		// For binary-only package, use build ID from supplied package binary.
-		buildID, err := buildid.ReadBuildID(p.Name, p.Target)
+		buildID, err := buildid.ReadFile(p.Target)
 		if err == nil {
+			// The stored build ID used to be "<actionID>".
+			// Now it is "<actionID>.<contentID>".
+			// For now at least, we want only the <actionID> part here.
+			if i := strings.Index(buildID, "."); i >= 0 {
+				buildID = buildID[:i]
+			}
 			p.Internal.BuildID = buildID
 		}
 	} else {
@@ -1167,27 +1129,58 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) {
 	}
 }
 
-// InternalDeps returns the full dependency list for p,
-// built by traversing p.Internal.Imports, their .Internal.Imports, and so on.
-// It guarantees that the returned list has only one package per ImportPath
-// and that "test" copies of a package are returned in preference to "real" ones.
-func (p *Package) InternalDeps() []*Package {
-	// Note: breadth-first search here to ensure that test-augmented copies
-	// of a package under test are found before the "real" ones
-	// (the real ones are deeper in the import graph).
-	// Since we're building the slice anyway, it doesn't cost anything.
-	all := []*Package{p}
-	have := map[string]bool{p.ImportPath: true, "unsafe": true}
-	// Note: Not a range loop because all is growing during the loop.
-	for i := 0; i < len(all); i++ {
-		for _, p1 := range all[i].Internal.Imports {
-			if !have[p1.ImportPath] {
-				have[p1.ImportPath] = true
-				all = append(all, p1)
-			}
+// LinkerDeps returns the list of linker-induced dependencies for p.
+func LinkerDeps(p *Package) []string {
+	var deps []string
+
+	// External linking mode forces an import of runtime/cgo.
+	if cfg.ExternalLinkingForced() {
+		deps = append(deps, "runtime/cgo")
+	}
+	// On ARM with GOARM=5, it forces an import of math, for soft floating point.
+	if cfg.Goarch == "arm" {
+		deps = append(deps, "math")
+	}
+	// Using the race detector forces an import of runtime/race.
+	if cfg.BuildRace {
+		deps = append(deps, "runtime/race")
+	}
+	// Using memory sanitizer forces an import of runtime/msan.
+	if cfg.BuildMSan {
+		deps = append(deps, "runtime/msan")
+	}
+
+	return deps
+}
+
+// mkAbs rewrites list, which must be paths relative to p.Dir,
+// into a sorted list of absolute paths. It edits list in place but for
+// convenience also returns list back to its caller.
+func (p *Package) mkAbs(list []string) []string {
+	for i, f := range list {
+		list[i] = filepath.Join(p.Dir, f)
+	}
+	sort.Strings(list)
+	return list
+}
+
+// InternalGoFiles returns the list of Go files being built for the package,
+// using absolute paths.
+func (p *Package) InternalGoFiles() []string {
+	return p.mkAbs(str.StringList(p.GoFiles, p.CgoFiles, p.TestGoFiles, p.XTestGoFiles))
+}
+
+// InternalGoFiles returns the list of all Go files possibly relevant for the package,
+// using absolute paths. "Possibly relevant" means that files are not excluded
+// due to build tags, but files with names beginning with . or _ are still excluded.
+func (p *Package) InternalAllGoFiles() []string {
+	var extra []string
+	for _, f := range p.IgnoredGoFiles {
+		if f != "" && f[0] != '.' || f[0] != '_' {
+			extra = append(extra, f)
 		}
 	}
-	return all[1:] // slice off p itself
+	return p.mkAbs(str.StringList(extra, p.GoFiles, p.CgoFiles, p.TestGoFiles, p.XTestGoFiles))
 }
 
 // usesSwig reports whether the package needs to run SWIG.
@@ -1226,6 +1219,9 @@ func PackageList(roots []*Package) []*Package {
 // at the named pkgs (command-line arguments).
 func ComputeStale(pkgs ...*Package) {
 	for _, p := range PackageList(pkgs) {
+		if p.Internal.BuildID == "" {
+			computeBuildID(p)
+		}
 		p.Stale, p.StaleReason = isStale(p)
 	}
 }
@@ -1516,11 +1512,11 @@ func isStale(p *Package) (bool, string) {
 	// if a rebuild is needed, that rebuild attempt will produce a useful error.
 	// (Some commands, such as 'go list', do not attempt to rebuild.)
 	if p.BinaryOnly {
-		if p.Internal.Target == "" {
+		if p.Target == "" {
 			// Fail if a build is attempted.
 			return true, "no source code for package, but no install target"
 		}
-		if _, err := os.Stat(p.Internal.Target); err != nil {
+		if _, err := os.Stat(p.Target); err != nil {
 			// Fail if a build is attempted.
 			return true, "no source code for package, but cannot access install target: " + err.Error()
 		}
@@ -1533,12 +1529,12 @@ func isStale(p *Package) (bool, string) {
 	}
 
 	// If there's no install target, we have to rebuild.
-	if p.Internal.Target == "" {
+	if p.Target == "" {
 		return true, "no install target"
 	}
 
 	// Package is stale if completely unbuilt.
-	fi, err := os.Stat(p.Internal.Target)
+	fi, err := os.Stat(p.Target)
 	if err != nil {
 		return true, "cannot stat install target"
 	}
@@ -1551,7 +1547,13 @@ func isStale(p *Package) (bool, string) {
 	// It also catches changes in toolchain, like when flipping between
 	// two versions of Go compiling a single GOPATH.
 	// See issue 8290 and issue 10702.
-	targetBuildID, err := buildid.ReadBuildID(p.Name, p.Target)
+	targetBuildID, err := buildid.ReadFile(p.Target)
+	// The build ID used to be "<actionID>".
+	// Now we've started writing "<actionID>.<contentID>".
+	// Ignore contentID for now and record only "<actionID>" here.
+	if i := strings.Index(targetBuildID, "."); i >= 0 {
+		targetBuildID = targetBuildID[:i]
+	}
 	if err == nil && targetBuildID != p.Internal.BuildID {
 		return true, "build ID mismatch"
 	}
@@ -1596,7 +1598,7 @@ func isStale(p *Package) (bool, string) {
 
 	// Package is stale if a dependency is, or if a dependency is newer.
 	for _, p1 := range p.Internal.Imports {
-		if p1.Internal.Target != "" && olderThan(p1.Internal.Target) {
+		if p1.Target != "" && olderThan(p1.Target) {
 			return true, "newer dependency"
 		}
 	}
@@ -1985,7 +1987,7 @@ func GoFilesPackage(gofiles []string) *Package {
 	stk.Pop()
 	pkg.Internal.LocalPrefix = dirToImportPath(dir)
 	pkg.ImportPath = "command-line-arguments"
-	pkg.Internal.Target = ""
+	pkg.Target = ""
 
 	if pkg.Name == "main" {
 		_, elem := filepath.Split(gofiles[0])
@@ -1994,11 +1996,10 @@ func GoFilesPackage(gofiles []string) *Package {
 			cfg.BuildO = exe
 		}
 		if cfg.GOBIN != "" {
-			pkg.Internal.Target = filepath.Join(cfg.GOBIN, exe)
+			pkg.Target = filepath.Join(cfg.GOBIN, exe)
 		}
 	}
 
-	pkg.Target = pkg.Internal.Target
 	pkg.Stale = true
 	pkg.StaleReason = "files named on command line"
 

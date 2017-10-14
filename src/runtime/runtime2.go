@@ -169,9 +169,13 @@ func efaceOf(ep *interface{}) *eface {
 // a word that is completely ignored by the GC than to have one for which
 // only a few updates are ignored.
 //
-// Gs, Ms, and Ps are always reachable via true pointers in the
-// allgs, allm, and allp lists or (during allocation before they reach those lists)
+// Gs and Ps are always reachable via true pointers in the
+// allgs and allp lists or (during allocation before they reach those lists)
 // from stack variables.
+//
+// Ms are always reachable via true pointers either from allm or
+// freem. Unlike Gs and Ps we do free Ms, so it's important that
+// nothing ever hold an muintptr across a safe point.
 
 // A guintptr holds a goroutine pointer, but typed as a uintptr
 // to bypass write barriers. It is used in the Gobuf goroutine state
@@ -221,6 +225,15 @@ func (pp puintptr) ptr() *p { return (*p)(unsafe.Pointer(pp)) }
 //go:nosplit
 func (pp *puintptr) set(p *p) { *pp = puintptr(unsafe.Pointer(p)) }
 
+// muintptr is a *m that is not tracked by the garbage collector.
+//
+// Because we do free Ms, there are some additional constrains on
+// muintptrs:
+//
+// 1. Never hold an muintptr locally across a safe point.
+//
+// 2. Any muintptr in the heap must be owned by the M itself so it can
+//    ensure it is not in use when the last true *m is released.
 type muintptr uintptr
 
 //go:nosplit
@@ -399,7 +412,7 @@ type m struct {
 	caughtsig     guintptr // goroutine running during fatal signal
 	p             puintptr // attached p for executing go code (nil if not executing go code)
 	nextp         puintptr
-	id            int32
+	id            int64
 	mallocing     int32
 	throwing      int32
 	preemptoff    string // if != "", keep curg running on this m
@@ -413,7 +426,8 @@ type m struct {
 	inwb          bool // m is executing a write barrier
 	newSigstack   bool // minit on C thread called sigaltstack
 	printlock     int8
-	incgo         bool // m is executing a cgo call
+	incgo         bool   // m is executing a cgo call
+	freeWait      uint32 // if == 0, safe to free g0 and delete m (atomic)
 	fastrand      [2]uint32
 	needextram    bool
 	traceback     uint8
@@ -430,8 +444,9 @@ type m struct {
 	freglo        [16]uint32     // d[i] lsb and f[i]
 	freghi        [16]uint32     // d[i] msb and f[i+16]
 	fflag         uint32         // floating point compare flags
-	locked        uint32         // tracking for lockosthread
-	nextwaitm     uintptr        // next m waiting for lock
+	lockedExt     uint32         // tracking for external LockOSThread
+	lockedInt     uint32         // tracking for internal lockOSThread
+	nextwaitm     muintptr       // next m waiting for lock
 	waitunlockf   unsafe.Pointer // todo go func(*g, unsafe.pointer) bool
 	waitlock      unsafe.Pointer
 	waittraceev   byte
@@ -439,6 +454,7 @@ type m struct {
 	startingtrace bool
 	syscalltick   uint32
 	thread        uintptr // thread handle
+	freelink      *m      // on sched.freem
 
 	// these are here because they are too large to be on the stack
 	// of low-level NOSPLIT functions.
@@ -506,9 +522,14 @@ type p struct {
 	palloc persistentAlloc // per-P to avoid mutex
 
 	// Per-P GC state
-	gcAssistTime     int64 // Nanoseconds in assistAlloc
-	gcBgMarkWorker   guintptr
-	gcMarkWorkerMode gcMarkWorkerMode
+	gcAssistTime         int64 // Nanoseconds in assistAlloc
+	gcFractionalMarkTime int64 // Nanoseconds in fractional mark worker
+	gcBgMarkWorker       guintptr
+	gcMarkWorkerMode     gcMarkWorkerMode
+
+	// gcMarkWorkerStartTime is the nanotime() at which this mark
+	// worker started.
+	gcMarkWorkerStartTime int64
 
 	// gcw is this P's GC work buffer cache. The work buffer is
 	// filled by write barriers, drained by mutator assists, and
@@ -520,12 +541,6 @@ type p struct {
 	pad [sys.CacheLineSize]byte
 }
 
-const (
-	// The max value of GOMAXPROCS.
-	// There are no fundamental restrictions on the value.
-	_MaxGomaxprocs = 1 << 10
-)
-
 type schedt struct {
 	// accessed atomically. keep at top to ensure alignment on 32-bit systems.
 	goidgen  uint64
@@ -533,11 +548,16 @@ type schedt struct {
 
 	lock mutex
 
+	// When increasing nmidle, nmidlelocked, nmsys, or nmfreed, be
+	// sure to call checkdead().
+
 	midle        muintptr // idle m's waiting for work
 	nmidle       int32    // number of idle m's waiting for work
 	nmidlelocked int32    // number of locked m's waiting for work
-	mcount       int32    // number of m's that have been created
+	mnext        int64    // number of m's that have been created and next M ID
 	maxmcount    int32    // maximum number of m's allowed (or die)
+	nmsys        int32    // number of system m's not counted for deadlock
+	nmfreed      int64    // cumulative number of freed m's
 
 	ngsys uint32 // number of system goroutines; updated atomically
 
@@ -564,6 +584,10 @@ type schedt struct {
 	deferlock mutex
 	deferpool [5]*_defer
 
+	// freem is the list of m's waiting to be freed when their
+	// m.exited is set. Linked through m.freelink.
+	freem *m
+
 	gcwaiting  uint32 // gc is waiting to run
 	stopwait   int32
 	stopnote   note
@@ -581,18 +605,6 @@ type schedt struct {
 	procresizetime int64 // nanotime() of last change to gomaxprocs
 	totaltime      int64 // ∫gomaxprocs dt up to procresizetime
 }
-
-// The m.locked word holds two pieces of state counting active calls to LockOSThread/lockOSThread.
-// The low bit (LockExternal) is a boolean reporting whether any LockOSThread call is active.
-// External locks are not recursive; a second lock is silently ignored.
-// The upper bits of m.locked record the nesting depth of calls to lockOSThread
-// (counting up by LockInternal), popped by unlockOSThread (counting down by LockInternal).
-// Internal locks can be recursive. For instance, a lock for cgo can occur while the main
-// goroutine is holding the lock during the initialization phase.
-const (
-	_LockExternal = 1
-	_LockInternal = 2
-)
 
 // Values for the flags field of a sigTabT.
 const (
@@ -675,7 +687,8 @@ func extendRandom(r []byte, n int) {
 	}
 }
 
-// deferred subroutine calls
+// A _defer holds an entry on the list of deferred calls.
+// If you add a field here, add code to clear it in freedefer.
 type _defer struct {
 	siz     int32
 	started bool
@@ -721,7 +734,8 @@ const _TracebackMaxFrames = 100
 var (
 	allglen    uintptr
 	allm       *m
-	allp       [_MaxGomaxprocs + 1]*p
+	allp       []*p  // len(allp) == gomaxprocs; may change at safe points, otherwise immutable
+	allpLock   mutex // Protects P-less reads of allp and all writes
 	gomaxprocs int32
 	ncpu       int32
 	forcegc    forcegcstate

@@ -272,7 +272,7 @@ var zoneinfoOnce sync.Once
 //
 // The time zone database needed by LoadLocation may not be
 // present on all systems, especially non-Unix systems.
-// LoadLocation looks in the directory or uncompressed zip file
+// LoadLocation looks in the directory, uncompressed zip file, or tzdata file
 // named by the ZONEINFO environment variable, if any, then looks in
 // known installation locations on Unix systems,
 // and finally looks in $GOROOT/lib/time/zoneinfo.zip.
@@ -292,13 +292,13 @@ func LoadLocation(name string) (*Location, error) {
 		env, _ := syscall.Getenv("ZONEINFO")
 		zoneinfo = &env
 	})
-	if zoneinfo != nil && *zoneinfo != "" {
-		if z, err := loadZoneFile(*zoneinfo, name); err == nil {
-			z.name = name
-			return z, nil
-		}
+	sources := zoneSources
+	if *zoneinfo != "" {
+		sources = make([]string, len(zoneSources)+1)
+		sources[0] = *zoneinfo
+		copy(sources[1:], zoneSources)
 	}
-	return loadLocation(name)
+	return loadLocation(name, sources)
 }
 
 // containsDotDot reports whether s contains "..".

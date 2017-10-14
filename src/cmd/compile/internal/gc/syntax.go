@@ -86,7 +86,6 @@ const (
 	_, nodeAddrtaken // address taken, even if not moved to heap
 	_, nodeImplicit
 	_, nodeIsddd    // is the argument variadic
-	_, nodeLocal    // type created in this file (see also Type.Local)
 	_, nodeDiag     // already printed error about this
 	_, nodeColas    // OAS resulting from :=
 	_, nodeNonNil   // guaranteed to be non-nil
@@ -113,7 +112,6 @@ func (n *Node) Assigned() bool              { return n.flags&nodeAssigned != 0 }
 func (n *Node) Addrtaken() bool             { return n.flags&nodeAddrtaken != 0 }
 func (n *Node) Implicit() bool              { return n.flags&nodeImplicit != 0 }
 func (n *Node) Isddd() bool                 { return n.flags&nodeIsddd != 0 }
-func (n *Node) Local() bool                 { return n.flags&nodeLocal != 0 }
 func (n *Node) Diag() bool                  { return n.flags&nodeDiag != 0 }
 func (n *Node) Colas() bool                 { return n.flags&nodeColas != 0 }
 func (n *Node) NonNil() bool                { return n.flags&nodeNonNil != 0 }
@@ -139,7 +137,6 @@ func (n *Node) SetAssigned(b bool)              { n.flags.set(nodeAssigned, b) }
 func (n *Node) SetAddrtaken(b bool)             { n.flags.set(nodeAddrtaken, b) }
 func (n *Node) SetImplicit(b bool)              { n.flags.set(nodeImplicit, b) }
 func (n *Node) SetIsddd(b bool)                 { n.flags.set(nodeIsddd, b) }
-func (n *Node) SetLocal(b bool)                 { n.flags.set(nodeLocal, b) }
 func (n *Node) SetDiag(b bool)                  { n.flags.set(nodeDiag, b) }
 func (n *Node) SetColas(b bool)                 { n.flags.set(nodeColas, b) }
 func (n *Node) SetNonNil(b bool)                { n.flags.set(nodeNonNil, b) }
@@ -387,7 +384,7 @@ type Func struct {
 
 	Pragma syntax.Pragma // go:xxx function annotations
 
-	flags bitset8
+	flags bitset16
 }
 
 // A Mark represents a scope boundary.
@@ -409,28 +406,31 @@ const (
 	funcNeedctxt                  // function uses context register (has closure variables)
 	funcReflectMethod             // function calls reflect.Type.Method or MethodByName
 	funcIsHiddenClosure
-	funcNoFramePointer   // Must not use a frame pointer for this function
-	funcHasDefer         // contains a defer statement
-	funcNilCheckDisabled // disable nil checks when compiling this function
+	funcNoFramePointer      // Must not use a frame pointer for this function
+	funcHasDefer            // contains a defer statement
+	funcNilCheckDisabled    // disable nil checks when compiling this function
+	funcInlinabilityChecked // inliner has already determined whether the function is inlinable
 )
 
-func (f *Func) Dupok() bool            { return f.flags&funcDupok != 0 }
-func (f *Func) Wrapper() bool          { return f.flags&funcWrapper != 0 }
-func (f *Func) Needctxt() bool         { return f.flags&funcNeedctxt != 0 }
-func (f *Func) ReflectMethod() bool    { return f.flags&funcReflectMethod != 0 }
-func (f *Func) IsHiddenClosure() bool  { return f.flags&funcIsHiddenClosure != 0 }
-func (f *Func) NoFramePointer() bool   { return f.flags&funcNoFramePointer != 0 }
-func (f *Func) HasDefer() bool         { return f.flags&funcHasDefer != 0 }
-func (f *Func) NilCheckDisabled() bool { return f.flags&funcNilCheckDisabled != 0 }
+func (f *Func) Dupok() bool               { return f.flags&funcDupok != 0 }
+func (f *Func) Wrapper() bool             { return f.flags&funcWrapper != 0 }
+func (f *Func) Needctxt() bool            { return f.flags&funcNeedctxt != 0 }
+func (f *Func) ReflectMethod() bool       { return f.flags&funcReflectMethod != 0 }
+func (f *Func) IsHiddenClosure() bool     { return f.flags&funcIsHiddenClosure != 0 }
+func (f *Func) NoFramePointer() bool      { return f.flags&funcNoFramePointer != 0 }
+func (f *Func) HasDefer() bool            { return f.flags&funcHasDefer != 0 }
+func (f *Func) NilCheckDisabled() bool    { return f.flags&funcNilCheckDisabled != 0 }
+func (f *Func) InlinabilityChecked() bool { return f.flags&funcInlinabilityChecked != 0 }
 
-func (f *Func) SetDupok(b bool)            { f.flags.set(funcDupok, b) }
-func (f *Func) SetWrapper(b bool)          { f.flags.set(funcWrapper, b) }
-func (f *Func) SetNeedctxt(b bool)         { f.flags.set(funcNeedctxt, b) }
-func (f *Func) SetReflectMethod(b bool)    { f.flags.set(funcReflectMethod, b) }
-func (f *Func) SetIsHiddenClosure(b bool)  { f.flags.set(funcIsHiddenClosure, b) }
-func (f *Func) SetNoFramePointer(b bool)   { f.flags.set(funcNoFramePointer, b) }
-func (f *Func) SetHasDefer(b bool)         { f.flags.set(funcHasDefer, b) }
-func (f *Func) SetNilCheckDisabled(b bool) { f.flags.set(funcNilCheckDisabled, b) }
+func (f *Func) SetDupok(b bool)               { f.flags.set(funcDupok, b) }
+func (f *Func) SetWrapper(b bool)             { f.flags.set(funcWrapper, b) }
+func (f *Func) SetNeedctxt(b bool)            { f.flags.set(funcNeedctxt, b) }
+func (f *Func) SetReflectMethod(b bool)       { f.flags.set(funcReflectMethod, b) }
+func (f *Func) SetIsHiddenClosure(b bool)     { f.flags.set(funcIsHiddenClosure, b) }
+func (f *Func) SetNoFramePointer(b bool)      { f.flags.set(funcNoFramePointer, b) }
+func (f *Func) SetHasDefer(b bool)            { f.flags.set(funcHasDefer, b) }
+func (f *Func) SetNilCheckDisabled(b bool)    { f.flags.set(funcNilCheckDisabled, b) }
+func (f *Func) SetInlinabilityChecked(b bool) { f.flags.set(funcInlinabilityChecked, b) }
 
 type Op uint8
 
@@ -574,7 +574,7 @@ const (
 	ORETURN   // return List
 	OSELECT   // select { List } (List is list of OXCASE or OCASE)
 	OSWITCH   // switch Ninit; Left { List } (List is a list of OXCASE or OCASE)
-	OTYPESW   // List = Left.(type) (appears as .Left of OSWITCH)
+	OTYPESW   // Left = Right.(type) (appears as .Left of OSWITCH)
 
 	// types
 	OTCHAN   // chan int

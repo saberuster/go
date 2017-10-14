@@ -277,10 +277,9 @@ func StopTrace() {
 
 	traceGoSched()
 
-	for _, p := range &allp {
-		if p == nil {
-			break
-		}
+	// Loop over all allocated Ps because dead Ps may still have
+	// trace buffers.
+	for _, p := range allp[:cap(allp)] {
 		buf := p.tracebuf
 		if buf != 0 {
 			traceFullQueue(buf)
@@ -320,10 +319,7 @@ func StopTrace() {
 
 	// The lock protects us from races with StartTrace/StopTrace because they do stop-the-world.
 	lock(&trace.lock)
-	for _, p := range &allp {
-		if p == nil {
-			break
-		}
+	for _, p := range allp[:cap(allp)] {
 		if p.tracebuf != 0 {
 			throw("trace: non-empty trace buffer in proc")
 		}

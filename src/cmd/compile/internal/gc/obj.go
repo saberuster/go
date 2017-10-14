@@ -203,24 +203,68 @@ func addptabs() {
 	}
 }
 
+func dumpGlobal(n *Node) {
+	if n.Type == nil {
+		Fatalf("external %v nil type\n", n)
+	}
+	if n.Class() == PFUNC {
+		return
+	}
+	if n.Sym.Pkg != localpkg {
+		return
+	}
+	dowidth(n.Type)
+	ggloblnod(n)
+}
+
+func dumpGlobalConst(n *Node) {
+	// only export typed constants
+	t := n.Type
+	if t == nil {
+		return
+	}
+	if n.Sym.Pkg != localpkg {
+		return
+	}
+	// only export integer constants for now
+	switch t.Etype {
+	case TINT8:
+	case TINT16:
+	case TINT32:
+	case TINT64:
+	case TINT:
+	case TUINT8:
+	case TUINT16:
+	case TUINT32:
+	case TUINT64:
+	case TUINT:
+	case TUINTPTR:
+		// ok
+	case TIDEAL:
+		if !Isconst(n, CTINT) {
+			return
+		}
+		x := n.Val().U.(*Mpint)
+		if x.Cmp(minintval[TINT]) < 0 || x.Cmp(maxintval[TINT]) > 0 {
+			return
+		}
+		// Ideal integers we export as int (if they fit).
+		t = types.Types[TINT]
+	default:
+		return
+	}
+	Ctxt.DwarfIntConst(myimportpath, n.Sym.Name, typesymname(t), n.Int64())
+}
+
 func dumpglobls() {
 	// add globals
 	for _, n := range externdcl {
-		if n.Op != ONAME {
-			continue
+		switch n.Op {
+		case ONAME:
+			dumpGlobal(n)
+		case OLITERAL:
+			dumpGlobalConst(n)
 		}
-
-		if n.Type == nil {
-			Fatalf("external %v nil type\n", n)
-		}
-		if n.Class() == PFUNC {
-			continue
-		}
-		if n.Sym.Pkg != localpkg {
-			continue
-		}
-		dowidth(n.Type)
-		ggloblnod(n)
 	}
 
 	obj.SortSlice(funcsyms, func(i, j int) bool {

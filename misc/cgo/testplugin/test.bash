@@ -15,8 +15,8 @@ goos=$(go env GOOS)
 goarch=$(go env GOARCH)
 
 function cleanup() {
-	rm -f plugin*.so unnamed*.so iface*.so
-	rm -rf host pkg sub iface issue18676 issue19534
+	rm -f plugin*.so unnamed*.so iface*.so issue*
+	rm -rf host pkg sub iface
 }
 trap cleanup EXIT
 
@@ -61,3 +61,22 @@ _timeout 10s ./issue18676
 GOPATH=$(pwd) go build -gcflags "$GO_GCFLAGS" -buildmode=plugin -ldflags='-pluginpath=issue.19534' -o plugin.so src/issue19534/plugin.go
 GOPATH=$(pwd) go build -gcflags "$GO_GCFLAGS" -o issue19534 src/issue19534/main.go
 ./issue19534
+
+# Test for issue 18584
+GOPATH=$(pwd) go build -gcflags "$GO_GCFLAGS" -buildmode=plugin -o plugin.so src/issue18584/plugin.go
+GOPATH=$(pwd) go build -gcflags "$GO_GCFLAGS" -o issue18584 src/issue18584/main.go
+./issue18584
+
+# Test for issue 19418
+GOPATH=$(pwd) go build -gcflags "$GO_GCFLAGS" -buildmode=plugin "-ldflags=-X main.Val=linkstr" -o plugin.so src/issue19418/plugin.go
+GOPATH=$(pwd) go build -gcflags "$GO_GCFLAGS" -o issue19418 src/issue19418/main.go
+./issue19418
+
+# Test for issue 19529
+GOPATH=$(pwd) go build -gcflags "$GO_GCFLAGS" -buildmode=plugin -o plugin.so src/issue19529/plugin.go
+
+# Test for issue 22175
+GOPATH=$(pwd) go build -gcflags "$GO_GCFLAGS" -buildmode=plugin -o issue22175_plugin1.so src/issue22175/plugin1.go
+GOPATH=$(pwd) go build -gcflags "$GO_GCFLAGS" -buildmode=plugin -o issue22175_plugin2.so src/issue22175/plugin2.go
+GOPATH=$(pwd) go build -gcflags "$GO_GCFLAGS" -o issue22175 src/issue22175/main.go
+./issue22175

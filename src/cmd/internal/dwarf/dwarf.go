@@ -21,6 +21,10 @@ const LocPrefix = "go.loc."
 // RangePrefix is the prefix for all the symbols containing DWARF range lists.
 const RangePrefix = "go.range."
 
+// InfoConstPrefix is the prefix for all symbols containing DWARF info
+// entries that contain constants.
+const ConstInfoPrefix = "go.constinfo."
+
 // Sym represents a symbol.
 type Sym interface {
 	Len() int64
@@ -114,7 +118,6 @@ type Context interface {
 	AddAddress(s Sym, t interface{}, ofs int64)
 	AddSectionOffset(s Sym, size int, t interface{}, ofs int64)
 	AddString(s Sym, v string)
-	SymValue(s Sym) int64
 }
 
 // AppendUleb128 appends v to b using DWARF's unsigned LEB128 encoding.
@@ -234,6 +237,7 @@ const (
 	DW_ABRV_COMPUNIT
 	DW_ABRV_FUNCTION
 	DW_ABRV_VARIABLE
+	DW_ABRV_INT_CONSTANT
 	DW_ABRV_AUTO
 	DW_ABRV_AUTO_LOCLIST
 	DW_ABRV_PARAM
@@ -277,9 +281,9 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 		[]dwAttrForm{
 			{DW_AT_name, DW_FORM_string},
 			{DW_AT_language, DW_FORM_data1},
-			{DW_AT_low_pc, DW_FORM_addr},
-			{DW_AT_high_pc, DW_FORM_addr},
 			{DW_AT_stmt_list, DW_FORM_sec_offset},
+			{DW_AT_low_pc, DW_FORM_addr},
+			{DW_AT_ranges, DW_FORM_sec_offset},
 			{DW_AT_comp_dir, DW_FORM_string},
 			{DW_AT_producer, DW_FORM_string},
 		},
@@ -307,6 +311,17 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 			{DW_AT_location, DW_FORM_block1},
 			{DW_AT_type, DW_FORM_ref_addr},
 			{DW_AT_external, DW_FORM_flag},
+		},
+	},
+
+	/* INT CONSTANT */
+	{
+		DW_TAG_constant,
+		DW_CHILDREN_no,
+		[]dwAttrForm{
+			{DW_AT_name, DW_FORM_string},
+			{DW_AT_type, DW_FORM_ref_addr},
+			{DW_AT_const_value, DW_FORM_sdata},
 		},
 	},
 
@@ -734,6 +749,36 @@ func HasChildren(die *DWDie) bool {
 	return abbrevs[die.Abbrev].children != 0
 }
 
+// PutIntConst writes a DIE for an integer constant
+func PutIntConst(ctxt Context, info, typ Sym, name string, val int64) {
+	Uleb128put(ctxt, info, DW_ABRV_INT_CONSTANT)
+	putattr(ctxt, info, DW_ABRV_INT_CONSTANT, DW_FORM_string, DW_CLS_STRING, int64(len(name)), name)
+	putattr(ctxt, info, DW_ABRV_INT_CONSTANT, DW_FORM_ref_addr, DW_CLS_REFERENCE, 0, typ)
+	putattr(ctxt, info, DW_ABRV_INT_CONSTANT, DW_FORM_sdata, DW_CLS_CONSTANT, val, nil)
+}
+
+// PutRanges writes a range table to sym. All addresses in ranges are
+// relative to some base address. If base is not nil, then they're
+// relative to the start of base. If base is nil, then the caller must
+// arrange a base address some other way (such as a DW_AT_low_pc
+// attribute).
+func PutRanges(ctxt Context, sym Sym, base Sym, ranges []Range) {
+	ps := ctxt.PtrSize()
+	// Write base address entry.
+	if base != nil {
+		ctxt.AddInt(sym, ps, -1)
+		ctxt.AddAddress(sym, base, 0)
+	}
+	// Write ranges.
+	for _, r := range ranges {
+		ctxt.AddInt(sym, ps, r.Start)
+		ctxt.AddInt(sym, ps, r.End)
+	}
+	// Write trailer.
+	ctxt.AddInt(sym, ps, 0)
+	ctxt.AddInt(sym, ps, 0)
+}
+
 // PutFunc writes a DIE for a function to s.
 // It also writes child DIEs for each variable in vars.
 func PutFunc(ctxt Context, info, loc, ranges Sym, name string, external bool, startPC Sym, size int64, scopes []Scope) error {
@@ -777,14 +822,7 @@ func putscope(ctxt Context, info, loc, ranges, startPC Sym, curscope int32, scop
 			Uleb128put(ctxt, info, DW_ABRV_LEXICAL_BLOCK_RANGES)
 			putattr(ctxt, info, DW_ABRV_LEXICAL_BLOCK_RANGES, DW_FORM_sec_offset, DW_CLS_PTR, ranges.Len(), ranges)
 
-			ctxt.AddAddress(ranges, nil, -1)
-			ctxt.AddAddress(ranges, startPC, 0)
-			for _, r := range scope.Ranges {
-				ctxt.AddAddress(ranges, nil, r.Start)
-				ctxt.AddAddress(ranges, nil, r.End)
-			}
-			ctxt.AddAddress(ranges, nil, 0)
-			ctxt.AddAddress(ranges, nil, 0)
+			PutRanges(ctxt, ranges, startPC, scope.Ranges)
 		}
 
 		curscope = putscope(ctxt, info, loc, ranges, startPC, curscope, scopes, encbuf)
@@ -797,6 +835,18 @@ func putscope(ctxt Context, info, loc, ranges, startPC Sym, curscope int32, scop
 func putvar(ctxt Context, info, loc Sym, v *Var, startPC Sym, encbuf []byte) {
 	n := v.Name
 
+	// If the variable was entirely optimized out, don't emit a location list;
+	// convert to an inline abbreviation and emit an empty location.
+	missing := false
+	switch {
+	case v.Abbrev == DW_ABRV_AUTO_LOCLIST && len(v.LocationList) == 0:
+		missing = true
+		v.Abbrev = DW_ABRV_AUTO
+	case v.Abbrev == DW_ABRV_PARAM_LOCLIST && len(v.LocationList) == 0:
+		missing = true
+		v.Abbrev = DW_ABRV_PARAM
+	}
+
 	Uleb128put(ctxt, info, int64(v.Abbrev))
 	putattr(ctxt, info, v.Abbrev, DW_FORM_string, DW_CLS_STRING, int64(len(n)), n)
 	putattr(ctxt, info, v.Abbrev, DW_FORM_udata, DW_CLS_CONSTANT, int64(v.DeclLine), nil)
@@ -805,13 +855,15 @@ func putvar(ctxt Context, info, loc Sym, v *Var, startPC Sym, encbuf []byte) {
 		addLocList(ctxt, loc, startPC, v, encbuf)
 	} else {
 		loc := encbuf[:0]
-		if v.StackOffset == 0 {
+		switch {
+		case missing:
+			break // no location
+		case v.StackOffset == 0:
 			loc = append(loc, DW_OP_call_frame_cfa)
-		} else {
+		default:
 			loc = append(loc, DW_OP_fbreg)
 			loc = AppendSleb128(loc, int64(v.StackOffset))
 		}
-
 		putattr(ctxt, info, v.Abbrev, DW_FORM_block1, DW_CLS_BLOCK, int64(len(loc)), loc)
 	}
 	putattr(ctxt, info, v.Abbrev, DW_FORM_ref_addr, DW_CLS_REFERENCE, 0, v.Type)

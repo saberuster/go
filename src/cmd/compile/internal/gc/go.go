@@ -14,7 +14,7 @@ import (
 
 const (
 	BADWIDTH        = types.BADWIDTH
-	MaxStackVarSize = 10 * 1024 * 1024
+	maxStackVarSize = 10 * 1024 * 1024
 )
 
 // isRuntimePkg reports whether p is package runtime.
@@ -198,7 +198,7 @@ var compiling_runtime bool
 // Compiling the standard library
 var compiling_std bool
 
-var compiling_wrappers int
+var compiling_wrappers bool
 
 var use_writebarrier bool
 

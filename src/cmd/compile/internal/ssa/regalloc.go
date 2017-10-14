@@ -488,7 +488,7 @@ func (s *regAllocState) allocValToReg(v *Value, mask regMask, nospill bool, pos 
 		c = s.curBlock.NewValue1(pos, OpCopy, v.Type, s.regs[r2].c)
 	} else if v.rematerializeable() {
 		// Rematerialize instead of loading from the spill location.
-		c = v.copyIntoNoXPos(s.curBlock)
+		c = v.copyIntoWithXPos(s.curBlock, pos)
 	} else {
 		// Load v from its spill location.
 		spill := s.makeSpill(v, s.curBlock)
@@ -1715,14 +1715,10 @@ func (s *regAllocState) placeSpills() {
 		}
 		oldSched = append(oldSched[:0], b.Values[nphi:]...)
 		b.Values = b.Values[:nphi]
-		for _, v := range start[b.ID] {
-			b.Values = append(b.Values, v)
-		}
+		b.Values = append(b.Values, start[b.ID]...)
 		for _, v := range oldSched {
 			b.Values = append(b.Values, v)
-			for _, w := range after[v.ID] {
-				b.Values = append(b.Values, w)
-			}
+			b.Values = append(b.Values, after[v.ID]...)
 		}
 	}
 }
@@ -2004,7 +2000,7 @@ func (e *edgeState) processDest(loc Location, vid ID, splice **Value, pos src.XP
 			// register to accomplish this.
 			r := e.findRegFor(v.Type)
 			e.erase(r)
-			x = v.copyIntoNoXPos(e.p)
+			x = v.copyIntoWithXPos(e.p, pos)
 			e.set(r, vid, x, false, pos)
 			// Make sure we spill with the size of the slot, not the
 			// size of x (which might be wider due to our dropping
@@ -2209,12 +2205,6 @@ type liveInfo struct {
 	ID   ID       // ID of value
 	dist int32    // # of instructions before next use
 	pos  src.XPos // source position of next use
-}
-
-// dblock contains information about desired & avoid registers at the end of a block.
-type dblock struct {
-	prefers []desiredStateEntry
-	avoid   regMask
 }
 
 // computeLive computes a map from block ID to a list of value IDs live at the end

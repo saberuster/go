@@ -377,6 +377,7 @@ func export(out *bufio.Writer, trace bool) int {
 				p.tracef("\n----\nfunc { %#v }\n", f.Inl)
 			}
 			p.int(i)
+			p.int(int(f.InlCost))
 			p.stmtList(f.Inl)
 			if p.trace {
 				p.tracef("\n")
@@ -663,9 +664,7 @@ func (p *exporter) typ(t *types.Type) {
 		// TODO(gri) Determine if they are already sorted
 		// in which case we can drop this step.
 		var methods []*types.Field
-		for _, m := range t.Methods().Slice() {
-			methods = append(methods, m)
-		}
+		methods = append(methods, t.Methods().Slice()...)
 		sort.Sort(methodbyname(methods))
 		p.int(len(methods))
 

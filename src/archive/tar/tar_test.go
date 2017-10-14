@@ -696,7 +696,7 @@ func TestHeaderAllowedFormats(t *testing.T) {
 	}, {
 		header:  &Header{AccessTime: time.Unix(0, 0)},
 		paxHdrs: map[string]string{paxAtime: "0"},
-		formats: FormatUSTAR | FormatPAX | FormatGNU,
+		formats: FormatPAX | FormatGNU,
 	}, {
 		header:  &Header{AccessTime: time.Unix(0, 0), Format: FormatUSTAR},
 		paxHdrs: map[string]string{paxAtime: "0"},
@@ -712,7 +712,7 @@ func TestHeaderAllowedFormats(t *testing.T) {
 	}, {
 		header:  &Header{AccessTime: time.Unix(-123, 0)},
 		paxHdrs: map[string]string{paxAtime: "-123"},
-		formats: FormatUSTAR | FormatPAX | FormatGNU,
+		formats: FormatPAX | FormatGNU,
 	}, {
 		header:  &Header{AccessTime: time.Unix(-123, 0), Format: FormatPAX},
 		paxHdrs: map[string]string{paxAtime: "-123"},
@@ -720,7 +720,7 @@ func TestHeaderAllowedFormats(t *testing.T) {
 	}, {
 		header:  &Header{ChangeTime: time.Unix(123, 456)},
 		paxHdrs: map[string]string{paxCtime: "123.000000456"},
-		formats: FormatUSTAR | FormatPAX | FormatGNU,
+		formats: FormatPAX | FormatGNU,
 	}, {
 		header:  &Header{ChangeTime: time.Unix(123, 456), Format: FormatUSTAR},
 		paxHdrs: map[string]string{paxCtime: "123.000000456"},
@@ -748,6 +748,15 @@ func TestHeaderAllowedFormats(t *testing.T) {
 	}, {
 		header:  &Header{Name: "sparse.db", Size: 1000, SparseHoles: []SparseEntry{{0, 500}}, Format: FormatUSTAR},
 		formats: FormatUnknown,
+	}, {
+		header:  &Header{Name: "foo/", Typeflag: TypeDir},
+		formats: FormatUSTAR | FormatPAX | FormatGNU,
+	}, {
+		header:  &Header{Name: "foo/", Typeflag: TypeReg},
+		formats: FormatUnknown,
+	}, {
+		header:  &Header{Name: "foo/", Typeflag: TypeSymlink},
+		formats: FormatUSTAR | FormatPAX | FormatGNU,
 	}}
 
 	for i, v := range vectors {
@@ -768,22 +777,15 @@ func TestHeaderAllowedFormats(t *testing.T) {
 }
 
 func TestSparseFiles(t *testing.T) {
+	if runtime.GOOS == "plan9" {
+		t.Skip("skipping test on plan9; see https://golang.org/issue/21977")
+	}
 	// Only perform the tests for hole-detection on the builders,
 	// where we have greater control over the filesystem.
 	sparseSupport := testenv.Builder() != ""
-	if runtime.GOOS == "linux" && runtime.GOARCH == "arm" {
-		// The "linux-arm" builder uses aufs for its root FS,
-		// which only supports hole-punching, but not hole-detection.
-		sparseSupport = false
-	}
-	if runtime.GOOS == "darwin" {
-		// The "darwin-*" builders use hfs+ for its root FS,
-		// which does not support sparse files.
-		sparseSupport = false
-	}
-	if runtime.GOOS == "openbsd" {
-		// The "openbsd-*" builders use ffs for its root FS,
-		// which does not support sparse files.
+	switch runtime.GOOS + "-" + runtime.GOARCH {
+	case "linux-amd64", "linux-386", "windows-amd64", "windows-386":
+	default:
 		sparseSupport = false
 	}
 

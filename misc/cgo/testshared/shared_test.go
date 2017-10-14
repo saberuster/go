@@ -47,7 +47,7 @@ func run(t *testing.T, msg string, args ...string) {
 func goCmd(t *testing.T, args ...string) {
 	newargs := []string{args[0], "-installsuffix=" + suffix}
 	if testing.Verbose() {
-		newargs = append(newargs, "-v")
+		newargs = append(newargs, "-x")
 	}
 	newargs = append(newargs, args[1:]...)
 	c := exec.Command("go", newargs...)
@@ -58,6 +58,7 @@ func goCmd(t *testing.T, args ...string) {
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr
 		err = c.Run()
+		output = []byte("(output above)")
 	} else {
 		output, err = c.CombinedOutput()
 	}
@@ -464,13 +465,13 @@ func TestGopathShlib(t *testing.T) {
 // that is not mapped into memory.
 func testPkgListNote(t *testing.T, f *elf.File, note *note) {
 	if note.section.Flags != 0 {
-		t.Errorf("package list section has flags %v", note.section.Flags)
+		t.Errorf("package list section has flags %v, want 0", note.section.Flags)
 	}
 	if isOffsetLoaded(f, note.section.Offset) {
 		t.Errorf("package list section contained in PT_LOAD segment")
 	}
 	if note.desc != "depBase\n" {
-		t.Errorf("incorrect package list %q", note.desc)
+		t.Errorf("incorrect package list %q, want %q", note.desc, "depBase\n")
 	}
 }
 
@@ -479,7 +480,7 @@ func testPkgListNote(t *testing.T, f *elf.File, note *note) {
 // bytes into it.
 func testABIHashNote(t *testing.T, f *elf.File, note *note) {
 	if note.section.Flags != elf.SHF_ALLOC {
-		t.Errorf("abi hash section has flags %v", note.section.Flags)
+		t.Errorf("abi hash section has flags %v, want SHF_ALLOC", note.section.Flags)
 	}
 	if !isOffsetLoaded(f, note.section.Offset) {
 		t.Errorf("abihash section not contained in PT_LOAD segment")
@@ -500,13 +501,13 @@ func testABIHashNote(t *testing.T, f *elf.File, note *note) {
 		return
 	}
 	if elf.ST_BIND(hashbytes.Info) != elf.STB_LOCAL {
-		t.Errorf("%s has incorrect binding %v", hashbytes.Name, elf.ST_BIND(hashbytes.Info))
+		t.Errorf("%s has incorrect binding %v, want STB_LOCAL", hashbytes.Name, elf.ST_BIND(hashbytes.Info))
 	}
 	if f.Sections[hashbytes.Section] != note.section {
-		t.Errorf("%s has incorrect section %v", hashbytes.Name, f.Sections[hashbytes.Section].Name)
+		t.Errorf("%s has incorrect section %v, want %s", hashbytes.Name, f.Sections[hashbytes.Section].Name, note.section)
 	}
 	if hashbytes.Value-note.section.Addr != 16 {
-		t.Errorf("%s has incorrect offset into section %d", hashbytes.Name, hashbytes.Value-note.section.Addr)
+		t.Errorf("%s has incorrect offset into section %d, want 16", hashbytes.Name, hashbytes.Value-note.section.Addr)
 	}
 }
 
@@ -514,14 +515,14 @@ func testABIHashNote(t *testing.T, f *elf.File, note *note) {
 // was linked against in an unmapped section.
 func testDepsNote(t *testing.T, f *elf.File, note *note) {
 	if note.section.Flags != 0 {
-		t.Errorf("package list section has flags %v", note.section.Flags)
+		t.Errorf("package list section has flags %v, want 0", note.section.Flags)
 	}
 	if isOffsetLoaded(f, note.section.Offset) {
 		t.Errorf("package list section contained in PT_LOAD segment")
 	}
 	// libdepBase.so just links against the lib containing the runtime.
 	if note.desc != soname {
-		t.Errorf("incorrect dependency list %q", note.desc)
+		t.Errorf("incorrect dependency list %q, want %q", note.desc, soname)
 	}
 }
 
@@ -559,7 +560,7 @@ func TestNotes(t *testing.T) {
 			abiHashNoteFound = true
 		case 3: // ELF_NOTE_GODEPS_TAG
 			if depsNoteFound {
-				t.Error("multiple abi hash notes")
+				t.Error("multiple depedency list notes")
 			}
 			testDepsNote(t, f, note)
 			depsNoteFound = true

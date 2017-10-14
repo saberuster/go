@@ -668,6 +668,47 @@ func TestCopy(t *testing.T) {
 	}
 }
 
+func TestCopyString(t *testing.T) {
+	t.Run("Slice", func(t *testing.T) {
+		s := bytes.Repeat([]byte{'_'}, 8)
+		val := ValueOf(s)
+
+		n := Copy(val, ValueOf(""))
+		if expecting := []byte("________"); n != 0 || !bytes.Equal(s, expecting) {
+			t.Errorf("got n = %d, s = %s, expecting n = 0, s = %s", n, s, expecting)
+		}
+
+		n = Copy(val, ValueOf("hello"))
+		if expecting := []byte("hello___"); n != 5 || !bytes.Equal(s, expecting) {
+			t.Errorf("got n = %d, s = %s, expecting n = 5, s = %s", n, s, expecting)
+		}
+
+		n = Copy(val, ValueOf("helloworld"))
+		if expecting := []byte("hellowor"); n != 8 || !bytes.Equal(s, expecting) {
+			t.Errorf("got n = %d, s = %s, expecting n = 8, s = %s", n, s, expecting)
+		}
+	})
+	t.Run("Array", func(t *testing.T) {
+		s := [...]byte{'_', '_', '_', '_', '_', '_', '_', '_'}
+		val := ValueOf(&s).Elem()
+
+		n := Copy(val, ValueOf(""))
+		if expecting := []byte("________"); n != 0 || !bytes.Equal(s[:], expecting) {
+			t.Errorf("got n = %d, s = %s, expecting n = 0, s = %s", n, s[:], expecting)
+		}
+
+		n = Copy(val, ValueOf("hello"))
+		if expecting := []byte("hello___"); n != 5 || !bytes.Equal(s[:], expecting) {
+			t.Errorf("got n = %d, s = %s, expecting n = 5, s = %s", n, s[:], expecting)
+		}
+
+		n = Copy(val, ValueOf("helloworld"))
+		if expecting := []byte("hellowor"); n != 8 || !bytes.Equal(s[:], expecting) {
+			t.Errorf("got n = %d, s = %s, expecting n = 8, s = %s", n, s[:], expecting)
+		}
+	})
+}
+
 func TestCopyArray(t *testing.T) {
 	a := [8]int{1, 2, 3, 4, 10, 9, 8, 7}
 	b := [11]int{11, 22, 33, 44, 1010, 99, 88, 77, 66, 55, 44}
@@ -3224,7 +3265,7 @@ func TestCallPanic(t *testing.T) {
 	i := timp(0)
 	v := ValueOf(T{i, i, i, i, T2{i, i}, i, i, T2{i, i}})
 	ok(func() { call(v.Field(0).Method(0)) })         // .t0.W
-	ok(func() { call(v.Field(0).Elem().Method(0)) })  // .t0.W
+	bad(func() { call(v.Field(0).Elem().Method(0)) }) // .t0.W
 	bad(func() { call(v.Field(0).Method(1)) })        // .t0.w
 	bad(func() { call(v.Field(0).Elem().Method(2)) }) // .t0.w
 	ok(func() { call(v.Field(1).Method(0)) })         // .T1.Y
@@ -3242,10 +3283,10 @@ func TestCallPanic(t *testing.T) {
 	bad(func() { call(v.Field(3).Method(1)) })        // .NamedT1.y
 	bad(func() { call(v.Field(3).Elem().Method(3)) }) // .NamedT1.y
 
-	ok(func() { call(v.Field(4).Field(0).Method(0)) })        // .NamedT2.T1.Y
-	ok(func() { call(v.Field(4).Field(0).Elem().Method(0)) }) // .NamedT2.T1.W
-	ok(func() { call(v.Field(4).Field(1).Method(0)) })        // .NamedT2.t0.W
-	ok(func() { call(v.Field(4).Field(1).Elem().Method(0)) }) // .NamedT2.t0.W
+	ok(func() { call(v.Field(4).Field(0).Method(0)) })         // .NamedT2.T1.Y
+	ok(func() { call(v.Field(4).Field(0).Elem().Method(0)) })  // .NamedT2.T1.W
+	ok(func() { call(v.Field(4).Field(1).Method(0)) })         // .NamedT2.t0.W
+	bad(func() { call(v.Field(4).Field(1).Elem().Method(0)) }) // .NamedT2.t0.W
 
 	bad(func() { call(v.Field(5).Method(0)) })        // .namedT0.W
 	bad(func() { call(v.Field(5).Elem().Method(0)) }) // .namedT0.W
@@ -6386,4 +6427,38 @@ func TestAliasNames(t *testing.T) {
 	if out != want {
 		t.Errorf("Talias2 print:\nhave: %s\nwant: %s", out, want)
 	}
+}
+
+func TestIssue22031(t *testing.T) {
+	type s []struct{ C int }
+
+	type t1 struct{ s }
+	type t2 struct{ f s }
+
+	tests := []Value{
+		ValueOf(t1{s{{}}}).Field(0).Index(0).Field(0),
+		ValueOf(t2{s{{}}}).Field(0).Index(0).Field(0),
+	}
+
+	for i, test := range tests {
+		if test.CanSet() {
+			t.Errorf("%d: CanSet: got true, want false", i)
+		}
+	}
+}
+
+type NonExportedFirst int
+
+func (i NonExportedFirst) ΦExported()       {}
+func (i NonExportedFirst) nonexported() int { panic("wrong") }
+
+func TestIssue22073(t *testing.T) {
+	m := ValueOf(NonExportedFirst(0)).Method(0)
+
+	if got := m.Type().NumOut(); got != 0 {
+		t.Errorf("NumOut: got %v, want 0", got)
+	}
+
+	// Shouldn't panic.
+	m.Call(nil)
 }

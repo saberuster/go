@@ -461,6 +461,8 @@ func setup() {
 // deptab lists changes to the default dependencies for a given prefix.
 // deps ending in /* read the whole directory; deps beginning with -
 // exclude files with that prefix.
+// Note that this table applies only to the build of cmd/go,
+// after the main compiler bootstrap.
 var deptab = []struct {
 	prefix string   // prefix of target
 	dep    []string // dependency tweaks for targets with that prefix
@@ -685,7 +687,7 @@ func install(dir string) {
 	// For package runtime, this writes go_asm.h, which
 	// the assembly files will need.
 	pkg := dir
-	if strings.HasPrefix(dir, "cmd/") {
+	if strings.HasPrefix(dir, "cmd/") && strings.Count(dir, "/") == 1 {
 		pkg = "main"
 	}
 	b := pathf("%s/_go_.a", workdir)
