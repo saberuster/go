@@ -224,15 +224,14 @@ func (p *noder) importDecl(imp *syntax.ImportDecl) {
 	pack.Sym = my
 	pack.Name.Pkg = ipkg
 
-	if my.Name == "." {
+	switch my.Name {
+	case ".":
 		importdot(ipkg, pack)
 		return
-	}
-	if my.Name == "init" {
+	case "init":
 		yyerrorl(pack.Pos, "cannot import package as init - init must be a func")
 		return
-	}
-	if my.Name == "_" {
+	case "_":
 		return
 	}
 	if my.Def != nil {
@@ -1047,7 +1046,6 @@ func (p *noder) commClauses(clauses []*syntax.CommClause, rbrace src.Pos) []*Nod
 		if clause.Comm != nil {
 			n.List.Set1(p.stmt(clause.Comm))
 		}
-		n.Xoffset = int64(types.Block)
 		n.Nbody.Set(p.stmts(clause.Body))
 		nodes = append(nodes, n)
 	}

@@ -97,7 +97,7 @@ func (p *parser) got(tok token) bool {
 
 func (p *parser) want(tok token) {
 	if !p.got(tok) {
-		p.syntax_error("expecting " + tok.String())
+		p.syntax_error("expecting " + tokstring(tok))
 		p.advance()
 	}
 }
@@ -126,7 +126,7 @@ func (p *parser) error_at(pos src.Pos, msg string) {
 // syntax_error_at reports a syntax error at the given position.
 func (p *parser) syntax_error_at(pos src.Pos, msg string) {
 	if trace {
-		defer p.trace("syntax_error (" + msg + ")")()
+		p.print("syntax error: " + msg)
 	}
 
 	if p.tok == _EOF && p.first != nil {
@@ -168,6 +168,18 @@ func (p *parser) syntax_error_at(pos src.Pos, msg string) {
 	p.error_at(pos, "syntax error: unexpected "+tok+msg)
 }
 
+// tokstring returns the English word for selected punctuation tokens
+// for more readable error messages.
+func tokstring(tok token) string {
+	switch tok {
+	case _Comma:
+		return "comma"
+	case _Semi:
+		return "semicolon or newline"
+	}
+	return tok.String()
+}
+
 // Convenience methods using the current token position.
 func (p *parser) pos() src.Pos            { return p.pos_at(p.line, p.col) }
 func (p *parser) error(msg string)        { p.error_at(p.pos(), msg) }
@@ -194,40 +206,42 @@ const stopset uint64 = 1<<_Break |
 // Advance consumes tokens until it finds a token of the stopset or followlist.
 // The stopset is only considered if we are inside a function (p.fnest > 0).
 // The followlist is the list of valid tokens that can follow a production;
-// if it is empty, exactly one token is consumed to ensure progress.
+// if it is empty, exactly one (non-EOF) token is consumed to ensure progress.
 func (p *parser) advance(followlist ...token) {
-	if len(followlist) == 0 {
-		p.next()
-		return
+	if trace {
+		p.print(fmt.Sprintf("advance %s", followlist))
 	}
 
 	// compute follow set
 	// (not speed critical, advance is only called in error situations)
-	var followset uint64 = 1 << _EOF // never skip over EOF
-	for _, tok := range followlist {
-		followset |= 1 << tok
+	var followset uint64 = 1 << _EOF // don't skip over EOF
+	if len(followlist) > 0 {
+		if p.fnest > 0 {
+			followset |= stopset
+		}
+		for _, tok := range followlist {
+			followset |= 1 << tok
+		}
 	}
 
-	for !(contains(followset, p.tok) || p.fnest > 0 && contains(stopset, p.tok)) {
+	for !contains(followset, p.tok) {
+		if trace {
+			p.print("skip " + p.tok.String())
+		}
 		p.next()
+		if len(followlist) == 0 {
+			break
+		}
 	}
-}
 
-func tokstring(tok token) string {
-	switch tok {
-	case _EOF:
-		return "EOF"
-	case _Comma:
-		return "comma"
-	case _Semi:
-		return "semicolon"
+	if trace {
+		p.print("next " + p.tok.String())
 	}
-	return tok.String()
 }
 
 // usage: defer p.trace(msg)()
 func (p *parser) trace(msg string) func() {
-	fmt.Printf("%5d: %s%s (\n", p.line, p.indent, msg)
+	p.print(msg + " (")
 	const tab = ". "
 	p.indent = append(p.indent, tab...)
 	return func() {
@@ -235,8 +249,12 @@ func (p *parser) trace(msg string) func() {
 		if x := recover(); x != nil {
 			panic(x) // skip print_trace
 		}
-		fmt.Printf("%5d: %s)\n", p.line, p.indent)
+		p.print(")")
 	}
+}
+
+func (p *parser) print(msg string) {
+	fmt.Printf("%5d: %s%s\n", p.line, p.indent, msg)
 }
 
 // ----------------------------------------------------------------------------
@@ -333,17 +351,47 @@ func isEmptyFuncDecl(dcl Decl) bool {
 // ----------------------------------------------------------------------------
 // Declarations
 
-// appendGroup(f) = f | "(" { f ";" } ")" .
-func (p *parser) appendGroup(list []Decl, f func(*Group) Decl) []Decl {
-	if p.got(_Lparen) {
-		g := new(Group)
-		for p.tok != _EOF && p.tok != _Rparen {
-			list = append(list, f(g))
-			if !p.osemi(_Rparen) {
-				break
+// list parses a possibly empty, sep-separated list, optionally
+// followed by sep and enclosed by ( and ) or { and }. open is
+// one of _Lparen, or _Lbrace, sep is one of _Comma or _Semi,
+// and close is expected to be the (closing) opposite of open.
+// For each list element, f is called. After f returns true, no
+// more list elements are accepted. list returns the position
+// of the closing token.
+//
+// list = "(" { f sep } ")" |
+//        "{" { f sep } "}" . // sep is optional before ")" or "}"
+//
+func (p *parser) list(open, sep, close token, f func() bool) src.Pos {
+	p.want(open)
+
+	var done bool
+	for p.tok != _EOF && p.tok != close && !done {
+		done = f()
+		// sep is optional before close
+		if !p.got(sep) && p.tok != close {
+			p.syntax_error(fmt.Sprintf("expecting %s or %s", tokstring(sep), tokstring(close)))
+			p.advance(_Rparen, _Rbrack, _Rbrace)
+			if p.tok != close {
+				// position could be better but we had an error so we don't care
+				return p.pos()
 			}
 		}
-		p.want(_Rparen)
+	}
+
+	pos := p.pos()
+	p.want(close)
+	return pos
+}
+
+// appendGroup(f) = f | "(" { f ";" } ")" . // ";" is optional before ")"
+func (p *parser) appendGroup(list []Decl, f func(*Group) Decl) []Decl {
+	if p.tok == _Lparen {
+		g := new(Group)
+		p.list(_Lparen, _Semi, _Rparen, func() bool {
+			list = append(list, f(g))
+			return false
+		})
 	} else {
 		list = append(list, f(nil))
 	}
@@ -857,7 +905,11 @@ loop:
 			p.xnest--
 
 		case _Lparen:
-			x = p.call(x)
+			t := new(CallExpr)
+			t.pos = pos
+			t.Fun = x
+			t.ArgList, t.HasDots = p.argList()
+			x = t
 
 		case _Lbrace:
 			// operand may have returned a parenthesized complit
@@ -917,10 +969,8 @@ func (p *parser) complitexpr() *CompositeLit {
 	x := new(CompositeLit)
 	x.pos = p.pos()
 
-	p.want(_Lbrace)
 	p.xnest++
-
-	for p.tok != _EOF && p.tok != _Rbrace {
+	x.Rbrace = p.list(_Lbrace, _Comma, _Rbrace, func() bool {
 		// value
 		e := p.bare_complitexpr()
 		if p.tok == _Colon {
@@ -934,14 +984,9 @@ func (p *parser) complitexpr() *CompositeLit {
 			x.NKeys++
 		}
 		x.ElemList = append(x.ElemList, e)
-		if !p.ocomma(_Rbrace) {
-			break
-		}
-	}
-
-	x.Rbrace = p.pos()
+		return false
+	})
 	p.xnest--
-	p.want(_Rbrace)
 
 	return x
 }
@@ -1127,14 +1172,10 @@ func (p *parser) structType() *StructType {
 	typ.pos = p.pos()
 
 	p.want(_Struct)
-	p.want(_Lbrace)
-	for p.tok != _EOF && p.tok != _Rbrace {
+	p.list(_Lbrace, _Semi, _Rbrace, func() bool {
 		p.fieldDecl(typ)
-		if !p.osemi(_Rbrace) {
-			break
-		}
-	}
-	p.want(_Rbrace)
+		return false
+	})
 
 	return typ
 }
@@ -1149,16 +1190,12 @@ func (p *parser) interfaceType() *InterfaceType {
 	typ.pos = p.pos()
 
 	p.want(_Interface)
-	p.want(_Lbrace)
-	for p.tok != _EOF && p.tok != _Rbrace {
+	p.list(_Lbrace, _Semi, _Rbrace, func() bool {
 		if m := p.methodDecl(); m != nil {
 			typ.MethodList = append(typ.MethodList, m)
 		}
-		if !p.osemi(_Rbrace) {
-			break
-		}
-	}
-	p.want(_Rbrace)
+		return false
+	})
 
 	return typ
 }
@@ -1411,10 +1448,9 @@ func (p *parser) paramList() (list []*Field) {
 	}
 
 	pos := p.pos()
-	p.want(_Lparen)
 
 	var named int // number of parameters that have an explicit name and type
-	for p.tok != _EOF && p.tok != _Rparen {
+	p.list(_Lparen, _Comma, _Rparen, func() bool {
 		if par := p.paramDeclOrNil(); par != nil {
 			if debug && par.Name == nil && par.Type == nil {
 				panic("parameter without name or type")
@@ -1424,10 +1460,8 @@ func (p *parser) paramList() (list []*Field) {
 			}
 			list = append(list, par)
 		}
-		if !p.ocomma(_Rparen) {
-			break
-		}
-	}
+		return false
+	})
 
 	// distribute parameter types
 	if named == 0 {
@@ -1466,7 +1500,6 @@ func (p *parser) paramList() (list []*Field) {
 		}
 	}
 
-	p.want(_Rparen)
 	return
 }
 
@@ -2044,32 +2077,20 @@ func (p *parser) stmtList() (l []Stmt) {
 }
 
 // Arguments = "(" [ ( ExpressionList | Type [ "," ExpressionList ] ) [ "..." ] [ "," ] ] ")" .
-func (p *parser) call(fun Expr) *CallExpr {
+func (p *parser) argList() (list []Expr, hasDots bool) {
 	if trace {
-		defer p.trace("call")()
+		defer p.trace("argList")()
 	}
 
-	// call or conversion
-	// convtype '(' expr ocomma ')'
-	c := new(CallExpr)
-	c.pos = p.pos()
-	c.Fun = fun
-
-	p.want(_Lparen)
 	p.xnest++
-
-	for p.tok != _EOF && p.tok != _Rparen {
-		c.ArgList = append(c.ArgList, p.expr())
-		c.HasDots = p.got(_DotDotDot)
-		if !p.ocomma(_Rparen) || c.HasDots {
-			break
-		}
-	}
-
+	p.list(_Lparen, _Comma, _Rparen, func() bool {
+		list = append(list, p.expr())
+		hasDots = p.got(_DotDotDot)
+		return hasDots
+	})
 	p.xnest--
-	p.want(_Rparen)
 
-	return c
+	return
 }
 
 // ----------------------------------------------------------------------------
@@ -2154,40 +2175,6 @@ func (p *parser) exprList() Expr {
 		x = t
 	}
 	return x
-}
-
-// osemi parses an optional semicolon.
-func (p *parser) osemi(follow token) bool {
-	switch p.tok {
-	case _Semi:
-		p.next()
-		return true
-
-	case _Rparen, _Rbrace:
-		// semicolon is optional before ) or }
-		return true
-	}
-
-	p.syntax_error("expecting semicolon, newline, or " + tokstring(follow))
-	p.advance(follow)
-	return false
-}
-
-// ocomma parses an optional comma.
-func (p *parser) ocomma(follow token) bool {
-	switch p.tok {
-	case _Comma:
-		p.next()
-		return true
-
-	case _Rparen, _Rbrace:
-		// comma is optional before ) or }
-		return true
-	}
-
-	p.syntax_error("expecting comma or " + tokstring(follow))
-	p.advance(follow)
-	return false
 }
 
 // unparen removes all parentheses around an expression.

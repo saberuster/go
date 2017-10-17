@@ -5,7 +5,7 @@
 package sym
 
 // Attribute is a set of common symbol attributes.
-type Attribute int16
+type Attribute uint16
 
 const (
 	// AttrDuplicateOK marks a symbol that can be present in multiple object
@@ -52,7 +52,15 @@ const (
 	AttrMakeTypelink
 	// AttrShared marks symbols compiled with the -shared option.
 	AttrShared
-	// 14 attributes defined so far.
+	// AttrVisibilityHidden symbols are ELF symbols with
+	// visibility set to STV_HIDDEN. They become local symbols in
+	// the final executable. Only relevant when internally linking
+	// on an ELF platform.
+	AttrVisibilityHidden
+	// AttrContainer is set on text symbols that are present as the .Outer for some
+	// other symbol.
+	AttrContainer
+	// 16 attributes defined so far.
 )
 
 func (a Attribute) DuplicateOK() bool      { return a&AttrDuplicateOK != 0 }
@@ -69,6 +77,8 @@ func (a Attribute) Local() bool            { return a&AttrLocal != 0 }
 func (a Attribute) ReflectMethod() bool    { return a&AttrReflectMethod != 0 }
 func (a Attribute) MakeTypelink() bool     { return a&AttrMakeTypelink != 0 }
 func (a Attribute) Shared() bool           { return a&AttrShared != 0 }
+func (a Attribute) VisibilityHidden() bool { return a&AttrVisibilityHidden != 0 }
+func (a Attribute) Container() bool        { return a&AttrContainer != 0 }
 
 func (a Attribute) CgoExport() bool {
 	return a.CgoExportDynamic() || a.CgoExportStatic()
