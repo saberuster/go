@@ -60,8 +60,12 @@ type Link struct {
 
 	Loaded bool // set after all inputs have been loaded as symbols
 
-	LinkMode  LinkMode
-	BuildMode BuildMode
+	IsELF    bool
+	HeadType objabi.HeadType
+
+	linkShared bool // link against installed Go shared libraries
+	LinkMode   LinkMode
+	BuildMode  BuildMode
 
 	Tlsg         *sym.Symbol
 	Libdir       []string

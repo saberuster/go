@@ -238,7 +238,7 @@ func adddynrel(ctxt *ld.Link, s *sym.Symbol, r *sym.Reloc) bool {
 		if s.Type != sym.SDATA {
 			break
 		}
-		if ld.Iself {
+		if ctxt.IsELF {
 			ld.Adddynsym(ctxt, targ)
 			rel := ctxt.Syms.Lookup(".rel", 0)
 			rel.AddAddrPlus(ctxt.Arch, s, int64(r.Off))
@@ -590,7 +590,7 @@ func archreloc(ctxt *ld.Link, r *sym.Reloc, s *sym.Symbol, val *int64) bool {
 			// the section load address.
 			// we need to compensate that by removing the instruction's address
 			// from addend.
-			if ld.Headtype == objabi.Hdarwin {
+			if ctxt.HeadType == objabi.Hdarwin {
 				r.Xadd -= ld.Symaddr(s) + int64(r.Off)
 			}
 
@@ -671,7 +671,7 @@ func addpltsym(ctxt *ld.Link, s *sym.Symbol) {
 
 	ld.Adddynsym(ctxt, s)
 
-	if ld.Iself {
+	if ctxt.IsELF {
 		plt := ctxt.Syms.Lookup(".plt", 0)
 		got := ctxt.Syms.Lookup(".got.plt", 0)
 		rel := ctxt.Syms.Lookup(".rel.plt", 0)
@@ -713,7 +713,7 @@ func addgotsyminternal(ctxt *ld.Link, s *sym.Symbol) {
 
 	got.AddAddrPlus(ctxt.Arch, s, 0)
 
-	if ld.Iself {
+	if ctxt.IsELF {
 	} else {
 		ld.Errorf(s, "addgotsyminternal: unsupported binary format")
 	}
@@ -729,7 +729,7 @@ func addgotsym(ctxt *ld.Link, s *sym.Symbol) {
 	s.Got = int32(got.Size)
 	got.AddUint32(ctxt.Arch, 0)
 
-	if ld.Iself {
+	if ctxt.IsELF {
 		rel := ctxt.Syms.Lookup(".rel", 0)
 		rel.AddAddrPlus(ctxt.Arch, got, int64(s.Got))
 		rel.AddUint32(ctxt.Arch, ld.ELF32_R_INFO(uint32(s.Dynid), uint32(elf.R_ARM_GLOB_DAT)))
@@ -743,7 +743,7 @@ func asmb(ctxt *ld.Link) {
 		ctxt.Logf("%5.2f asmb\n", ld.Cputime())
 	}
 
-	if ld.Iself {
+	if ctxt.IsELF {
 		ld.Asmbelfsetup()
 	}
 
@@ -781,7 +781,7 @@ func asmb(ctxt *ld.Link) {
 	ld.Dwarfblk(ctxt, int64(ld.Segdwarf.Vaddr), int64(ld.Segdwarf.Filelen))
 
 	machlink := uint32(0)
-	if ld.Headtype == objabi.Hdarwin {
+	if ctxt.HeadType == objabi.Hdarwin {
 		machlink = uint32(ld.Domacholink(ctxt))
 	}
 
@@ -795,9 +795,9 @@ func asmb(ctxt *ld.Link) {
 		if ctxt.Debugvlog != 0 {
 			ctxt.Logf("%5.2f sym\n", ld.Cputime())
 		}
-		switch ld.Headtype {
+		switch ctxt.HeadType {
 		default:
-			if ld.Iself {
+			if ctxt.IsELF {
 				symo = uint32(ld.Segdwarf.Fileoff + ld.Segdwarf.Filelen)
 				symo = uint32(ld.Rnd(int64(symo), int64(*ld.FlagRound)))
 			}
@@ -810,9 +810,9 @@ func asmb(ctxt *ld.Link) {
 		}
 
 		ctxt.Out.SeekSet(int64(symo))
-		switch ld.Headtype {
+		switch ctxt.HeadType {
 		default:
-			if ld.Iself {
+			if ctxt.IsELF {
 				if ctxt.Debugvlog != 0 {
 					ctxt.Logf("%5.2f elfsym\n", ld.Cputime())
 				}
@@ -847,7 +847,7 @@ func asmb(ctxt *ld.Link) {
 		ctxt.Logf("%5.2f header\n", ld.Cputime())
 	}
 	ctxt.Out.SeekSet(0)
-	switch ld.Headtype {
+	switch ctxt.HeadType {
 	default:
 	case objabi.Hplan9: /* plan 9 */
 		ctxt.Out.Write32b(0x647)                      /* magic */

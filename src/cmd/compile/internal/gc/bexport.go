@@ -594,7 +594,7 @@ func isInlineable(n *Node) bool {
 	if exportInlined && n != nil && n.Func != nil && n.Func.Inl.Len() != 0 {
 		// when lazily typechecking inlined bodies, some re-exported ones may not have been typechecked yet.
 		// currently that can leave unresolved ONONAMEs in import-dot-ed packages in the wrong package
-		if Debug['l'] < 2 {
+		if Debug_typecheckinl == 0 {
 			typecheckinl(n)
 		}
 		return true
@@ -1192,7 +1192,7 @@ func (p *exporter) expr(n *Node) {
 		// Special case: explicit name of func (*T) method(...) is turned into pkg.(*T).method,
 		// but for export, this should be rendered as (*pkg.T).meth.
 		// These nodes have the special property that they are names with a left OTYPE and a right ONAME.
-		if n.Left != nil && n.Left.Op == OTYPE && n.Right != nil && n.Right.Op == ONAME {
+		if n.isMethodExpression() {
 			p.op(OXDOT)
 			p.pos(n)
 			p.expr(n.Left) // n.Left.Op == OTYPE

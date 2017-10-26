@@ -8,18 +8,21 @@
 // expand calls to inlinable functions.
 //
 // The debug['l'] flag controls the aggressiveness. Note that main() swaps level 0 and 1,
-// making 1 the default and -l disable.  -ll and more is useful to flush out bugs.
-// These additional levels (beyond -l) may be buggy and are not supported.
+// making 1 the default and -l disable. Additional levels (beyond -l) may be buggy and
+// are not supported.
 //      0: disabled
 //      1: 80-nodes leaf functions, oneliners, lazy typechecking (default)
-//      2: early typechecking of all imported bodies
+//      2: (unassigned)
 //      3: allow variadic functions
-//      4: allow non-leaf functions , (breaks runtime.Caller)
+//      4: allow non-leaf functions
 //
-//  At some point this may get another default and become switch-offable with -N.
+// At some point this may get another default and become switch-offable with -N.
 //
-//  The debug['m'] flag enables diagnostic output.  a single -m is useful for verifying
-//  which calls get inlined or not, more is for debugging, and may go away at any point.
+// The -d typcheckinl flag enables early typechecking of all imported bodies,
+// which is useful to flush out bugs.
+//
+// The debug['m'] flag enables diagnostic output.  a single -m is useful for verifying
+// which calls get inlined or not, more is for debugging, and may go away at any point.
 //
 // TODO:
 //   - inline functions with ... args
@@ -114,6 +117,15 @@ func caninl(fn *Node) {
 	// function makes assumptions about its argument frame layout.
 	if fn.Func.Pragma&CgoUnsafeArgs != 0 {
 		reason = "marked go:cgo_unsafe_args"
+		return
+	}
+
+	// The nowritebarrierrec checker currently works at function
+	// granularity, so inlining yeswritebarrierrec functions can
+	// confuse it (#22342). As a workaround, disallow inlining
+	// them for now.
+	if fn.Func.Pragma&Yeswritebarrierrec != 0 {
+		reason = "marked go:yeswritebarrierrec"
 		return
 	}
 
@@ -232,7 +244,7 @@ func (v *hairyVisitor) visit(n *Node) bool {
 			break
 		}
 
-		if n.isMethodCalledAsFunction() {
+		if n.Left.isMethodExpression() {
 			if d := asNode(n.Left.Sym.Def); d != nil && d.Func.Inl.Len() != 0 {
 				v.budget -= d.Func.InlCost
 				break
@@ -524,7 +536,7 @@ func inlnode(n *Node) *Node {
 		}
 		if n.Left.Func != nil && n.Left.Func.Inl.Len() != 0 && !isIntrinsicCall(n) { // normal case
 			n = mkinlcall(n, n.Left, n.Isddd())
-		} else if n.isMethodCalledAsFunction() && asNode(n.Left.Sym.Def) != nil {
+		} else if n.Left.isMethodExpression() && asNode(n.Left.Sym.Def) != nil {
 			n = mkinlcall(n, asNode(n.Left.Sym.Def), n.Isddd())
 		} else if n.Left.Op == OCLOSURE {
 			if f := inlinableClosure(n.Left); f != nil {
@@ -718,7 +730,7 @@ func mkinlcall1(n, fn *Node, isddd bool) *Node {
 		return n
 	}
 
-	if Debug['l'] < 2 {
+	if Debug_typecheckinl == 0 {
 		typecheckinl(fn)
 	}
 
@@ -1082,8 +1094,4 @@ func (subst *inlsubst) updatedPos(xpos src.XPos) src.XPos {
 	}
 	pos.SetBase(newbase)
 	return Ctxt.PosTable.XPos(pos)
-}
-
-func (n *Node) isMethodCalledAsFunction() bool {
-	return n.Left.Op == ONAME && n.Left.Left != nil && n.Left.Left.Op == OTYPE && n.Left.Right != nil && n.Left.Right.Op == ONAME
 }

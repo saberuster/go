@@ -1689,10 +1689,14 @@ func (p *parser) blockStmt(context string) *BlockStmt {
 	s := new(BlockStmt)
 	s.pos = p.pos()
 
+	// people coming from C may forget that braces are mandatory in Go
 	if !p.got(_Lbrace) {
 		p.syntax_error("expecting { after " + context)
 		p.advance(_Name, _Rbrace)
-		// TODO(gri) may be better to return here than to continue (#19663)
+		s.Rbrace = p.pos() // in case we found "}"
+		if p.got(_Rbrace) {
+			return s
+		}
 	}
 
 	s.List = p.stmtList()
@@ -2063,14 +2067,11 @@ func (p *parser) stmtList() (l []Stmt) {
 			break
 		}
 		l = append(l, s)
-		// customized version of osemi:
-		// ';' is optional before a closing ')' or '}'
-		if p.tok == _Rparen || p.tok == _Rbrace {
-			continue
-		}
-		if !p.got(_Semi) {
+		// ";" is optional before "}"
+		if !p.got(_Semi) && p.tok != _Rbrace {
 			p.syntax_error("at end of statement")
-			p.advance(_Semi, _Rbrace)
+			p.advance(_Semi, _Rbrace, _Case, _Default)
+			p.got(_Semi) // avoid spurious empty statement
 		}
 	}
 	return

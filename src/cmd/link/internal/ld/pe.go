@@ -93,6 +93,7 @@ const (
 
 // TODO(crawshaw): add these constants to debug/pe.
 const (
+	// TODO: the Microsoft doco says IMAGE_SYM_DTYPE_ARRAY is 3 and IMAGE_SYM_DTYPE_FUNCTION is 2
 	IMAGE_SYM_TYPE_NULL      = 0
 	IMAGE_SYM_TYPE_STRUCT    = 8
 	IMAGE_SYM_DTYPE_FUNCTION = 0x20
@@ -1032,7 +1033,8 @@ func initdynimport(ctxt *Link) *Dll {
 		dynamic.Type = sym.SWINDOWS
 		for d := dr; d != nil; d = d.next {
 			for m = d.ms; m != nil; m = m.next {
-				m.s.Type = sym.SWINDOWS | sym.SSUB
+				m.s.Type = sym.SWINDOWS
+				m.s.Attr |= sym.AttrSubSymbol
 				m.s.Sub = dynamic.Sub
 				dynamic.Sub = m.s
 				m.s.Value = dynamic.Size

@@ -217,12 +217,12 @@ func (d *deadcodepass) init() {
 		// In a normal binary, start at main.main and the init
 		// functions and mark what is reachable from there.
 
-		if *FlagLinkshared && (d.ctxt.BuildMode == BuildModeExe || d.ctxt.BuildMode == BuildModePIE) {
+		if d.ctxt.linkShared && (d.ctxt.BuildMode == BuildModeExe || d.ctxt.BuildMode == BuildModePIE) {
 			names = append(names, "main.main", "main.init")
 		} else {
 			// The external linker refers main symbol directly.
 			if d.ctxt.LinkMode == LinkExternal && (d.ctxt.BuildMode == BuildModeExe || d.ctxt.BuildMode == BuildModePIE) {
-				if Headtype == objabi.Hwindows && d.ctxt.Arch.Family == sys.I386 {
+				if d.ctxt.HeadType == objabi.Hwindows && d.ctxt.Arch.Family == sys.I386 {
 					*flagEntrySymbol = "_main"
 				} else {
 					*flagEntrySymbol = "main"

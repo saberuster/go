@@ -1059,7 +1059,17 @@ func writelines(ctxt *Link, lib *sym.Library, textp []*sym.Symbol, ls *sym.Symbo
 	// the linker directory. If we move CU construction into the
 	// compiler, this should happen naturally.
 	newattr(dwinfo, dwarf.DW_AT_comp_dir, dwarf.DW_CLS_STRING, int64(len(compDir)), compDir)
+	producerExtra := ctxt.Syms.Lookup(dwarf.CUInfoPrefix+"producer."+lib.Pkg, 0)
 	producer := "Go cmd/compile " + objabi.Version
+	if len(producerExtra.P) > 0 {
+		// We put a semicolon before the flags to clearly
+		// separate them from the version, which can be long
+		// and have lots of weird things in it in development
+		// versions. We promise not to put a semicolon in the
+		// version, so it should be safe for readers to scan
+		// forward to the semicolon.
+		producer += "; " + string(producerExtra.P)
+	}
 	newattr(dwinfo, dwarf.DW_AT_producer, dwarf.DW_CLS_STRING, int64(len(producer)), producer)
 
 	// Write .debug_line Line Number Program Header (sec 6.2.4)
@@ -1453,7 +1463,7 @@ func writepub(ctxt *Link, sname string, ispub func(*dwarf.DWDie) bool, syms []*s
 }
 
 func writegdbscript(ctxt *Link, syms []*sym.Symbol) []*sym.Symbol {
-	if ctxt.LinkMode == LinkExternal && Headtype == objabi.Hwindows && ctxt.BuildMode == BuildModeCArchive {
+	if ctxt.LinkMode == LinkExternal && ctxt.HeadType == objabi.Hwindows && ctxt.BuildMode == BuildModeCArchive {
 		// gcc on Windows places .debug_gdb_scripts in the wrong location, which
 		// causes the program not to run. See https://golang.org/issue/20183
 		// Non c-archives can avoid this issue via a linker script
@@ -1489,18 +1499,18 @@ func dwarfgeneratedebugsyms(ctxt *Link) {
 	if *FlagW { // disable dwarf
 		return
 	}
-	if *FlagS && Headtype != objabi.Hdarwin {
+	if *FlagS && ctxt.HeadType != objabi.Hdarwin {
 		return
 	}
-	if Headtype == objabi.Hplan9 {
+	if ctxt.HeadType == objabi.Hplan9 {
 		return
 	}
 
 	if ctxt.LinkMode == LinkExternal {
 		switch {
-		case Iself:
-		case Headtype == objabi.Hdarwin:
-		case Headtype == objabi.Hwindows:
+		case ctxt.IsELF:
+		case ctxt.HeadType == objabi.Hdarwin:
+		case ctxt.HeadType == objabi.Hwindows:
 		default:
 			return
 		}
